@@ -1,10 +1,4 @@
-"""
-Flask admin panel for reviewing candidate orgs.
-
-Usage:
-    python -m app.admin          # start on port 5000
-    python -m app.admin --port 8080
-"""
+"""Flask admin panel for reviewing candidate orgs."""
 
 from __future__ import annotations
 
@@ -16,28 +10,36 @@ from flask import Flask, jsonify, render_template, request
 from app.db import (
     add_strategy,
     get_active_orgs,
-    get_review_queue_orgs,
-    get_strategies,
+    get_discovery_runs,
+    get_latest_discovery_run,
     get_org,
+    get_review_queue_orgs,
     get_stats,
+    get_strategies,
     init_db,
     set_strategy_active,
     update_org,
     upsert_org,
 )
+from app.discover import run_discovery_cycle
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# Ensure schema exists when running under WSGI/Gunicorn (main() is not executed there).
+# Ensure schema exists when running under WSGI/Gunicorn.
 init_db()
+
 
 def _json_safe(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
 
-def _serialize_row(row: dict) -> dict:
+
+def _serialize_row(row: dict | None) -> dict | None:
+    if row is None:
+        return None
     return {key: _json_safe(value) for key, value in row.items()}
+
 
 def _parse_dt(value) -> datetime | None:
     if isinstance(value, datetime):
@@ -53,11 +55,13 @@ def _parse_dt(value) -> datetime | None:
             return None
     return None
 
+
 def _is_new_org(row: dict) -> bool:
     created_at = _parse_dt(row.get("created_at"))
     if not created_at:
         return False
     return created_at >= (datetime.now(timezone.utc) - timedelta(days=7))
+
 
 def _queue_reason(row: dict) -> str:
     custom_reason = str(row.get("review_needed_reason") or "").strip()
@@ -80,6 +84,7 @@ def _queue_reason(row: dict) -> str:
 
     return "Needs manual review"
 
+
 def _feedback_implies_reject(feedback: str) -> bool:
     lower = str(feedback or "").lower()
     if not lower.strip():
@@ -101,9 +106,12 @@ def _feedback_implies_reject(feedback: str) -> bool:
     ]
     return any(signal in lower for signal in reject_signals)
 
+
 def _state_payload() -> dict:
     queue_rows = get_review_queue_orgs(limit=300)
     active_rows = get_active_orgs()
+    latest_discovery = get_latest_discovery_run()
+    recent_discovery = get_discovery_runs(limit=8)
 
     queue_payload = []
     for row in queue_rows:
@@ -123,7 +131,10 @@ def _state_payload() -> dict:
         "queue": queue_payload,
         "active_orgs": active_payload,
         "strategies": [_serialize_row(item) for item in get_strategies()],
+        "discovery_latest": _serialize_row(latest_discovery),
+        "discovery_runs": [_serialize_row(item) for item in recent_discovery],
     }
+
 
 @app.route("/")
 def home():
@@ -155,6 +166,7 @@ def add_org():
 
     return jsonify({"ok": True, "id": org_id})
 
+
 @app.route("/api/orgs/bulk", methods=["POST"])
 def bulk_add():
     data = request.json
@@ -180,24 +192,29 @@ def bulk_add():
 
     return jsonify({"ok": True, "count": len(ids), "ids": ids})
 
+
 @app.route("/healthz")
 def healthz():
     init_db()
     return jsonify({"ok": True})
+
 
 @app.route("/api/stats")
 def stats():
     init_db()
     return jsonify(get_stats())
 
+
 @app.route("/export")
 def export():
     """Export active orgs as JSON."""
     return jsonify(get_active_orgs())
 
+
 @app.route("/api/admin/state")
 def admin_state():
     return jsonify(_state_payload())
+
 
 @app.route("/api/admin/review/<int:org_id>", methods=["POST"])
 def review_org(org_id):
@@ -284,6 +301,7 @@ def review_org(org_id):
         }
     )
 
+
 @app.route("/api/admin/strategies", methods=["GET", "POST"])
 def strategies():
     if request.method == "GET":
@@ -295,9 +313,10 @@ def strategies():
         return jsonify({"error": "text required"}), 400
 
     strategy_id = add_strategy(text_value=text_value, active=True)
-    strategies = get_strategies()
-    strategy = next((item for item in strategies if int(item["id"]) == strategy_id), None)
-    return jsonify({"ok": True, "strategy": _serialize_row(strategy) if strategy else None})
+    strategy_rows = get_strategies()
+    strategy_row = next((item for item in strategy_rows if int(item["id"]) == strategy_id), None)
+    return jsonify({"ok": True, "strategy": _serialize_row(strategy_row) if strategy_row else None})
+
 
 @app.route("/api/admin/strategies/<int:strategy_id>", methods=["PATCH"])
 def strategy_toggle(strategy_id):
@@ -307,6 +326,44 @@ def strategy_toggle(strategy_id):
 
     set_strategy_active(strategy_id, bool(data["active"]))
     return jsonify({"ok": True})
+
+
+@app.route("/api/admin/discovery/run", methods=["POST"])
+def run_discovery_now():
+    data = request.json or {}
+
+    def _optional_int(name: str) -> int | None:
+        if name not in data:
+            return None
+        try:
+            value = int(data.get(name))
+            return value if value > 0 else None
+        except Exception:
+            return None
+
+    summary = run_discovery_cycle(
+        trigger="manual",
+        max_queries=_optional_int("max_queries"),
+        max_results_per_query=_optional_int("max_results_per_query"),
+        max_candidates=_optional_int("max_candidates"),
+        request_timeout=_optional_int("request_timeout"),
+        dry_run=bool(data.get("dry_run", False)),
+        borough=str(data.get("borough") or "").strip() or None,
+        category=str(data.get("category") or "").strip() or None,
+    )
+
+    return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
+
+
+@app.route("/api/admin/discovery/runs")
+def discovery_runs():
+    return jsonify(
+        {
+            "latest": _serialize_row(get_latest_discovery_run()),
+            "runs": [_serialize_row(item) for item in get_discovery_runs(limit=20)],
+        }
+    )
+
 
 def main():
     parser = argparse.ArgumentParser(description="Org review admin panel")
@@ -318,6 +375,7 @@ def main():
     print(f"\n  Org Curation:       http://{args.host}:{args.port}")
     print(f"  Export active:      http://{args.host}:{args.port}/export\n")
     app.run(host=args.host, port=args.port, debug=True)
+
 
 if __name__ == "__main__":
     main()

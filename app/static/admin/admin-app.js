@@ -18,6 +18,8 @@ let state = window.APP_INITIAL_STATE || {
   queue: [],
   active_orgs: [],
   strategies: [],
+  discovery_latest: null,
+  discovery_runs: [],
 };
 
 const ui = {
@@ -229,6 +231,37 @@ async function toggleStrategy(strategyId, active) {
   }
 }
 
+async function runDiscoveryNow() {
+  ui.isBusy = true;
+  render();
+  try {
+    const payload = await apiRequest("/api/admin/discovery/run", {
+      method: "POST",
+      body: JSON.stringify({
+        max_queries: 10,
+        max_results_per_query: 6,
+        max_candidates: 30,
+        request_timeout: 10,
+      }),
+    });
+
+    state = payload.state || state;
+    const summary = payload.summary || {};
+    if (summary.status === "skipped") {
+      setNotice(summary.reason || "Discovery skipped.");
+    } else {
+      const upsertedCount = Number(summary.upserted_count || 0);
+      const candidateCount = Number(summary.candidate_count || 0);
+      setNotice(`Discovery complete: ${upsertedCount} upserted from ${candidateCount} candidates.`);
+    }
+  } catch (error) {
+    setNotice(error.message);
+  } finally {
+    ui.isBusy = false;
+    render();
+  }
+}
+
 function renderQueue() {
   const queue = state.queue || [];
   const current = queue.find((item) => item.id === ui.currentQueueId) || null;
@@ -431,6 +464,95 @@ function renderStrategies() {
   `;
 }
 
+function runStatusMeta(status) {
+  if (status === "success") return { label: "Success", className: "approved" };
+  if (status === "failed") return { label: "Failed", className: "rejected" };
+  return { label: "Running", className: "pending" };
+}
+
+function renderDiscovery() {
+  const latest = state.discovery_latest || null;
+  const runs = state.discovery_runs || [];
+  const latestMeta = runStatusMeta(String(latest?.status || "running"));
+  const latestDetails = latest?.details || {};
+
+  const latestSummary = latest
+    ? `
+      <div class="strategy-summary">
+        <h3>Latest run</h3>
+        <p><strong>Run #${escapeHtml(latest.id)}</strong> · ${escapeHtml(String(latest.trigger || "manual"))}</p>
+        <p><span class="status ${latestMeta.className}">${latestMeta.label}</span></p>
+        <p>Started: ${escapeHtml(formatDate(latest.started_at))}</p>
+        <p>Finished: ${escapeHtml(formatDate(latest.finished_at))}</p>
+        <p>Queries: ${escapeHtml(latest.query_count ?? latestDetails.query_count ?? "-")}</p>
+        <p>Candidates: ${escapeHtml(latest.result_count ?? latestDetails.candidate_count ?? "-")}</p>
+        <p>Upserted: ${escapeHtml(latest.upserted_count ?? latestDetails.upserted_count ?? "-")}</p>
+        <p>Query errors: ${escapeHtml(latestDetails.query_errors ?? "-")}</p>
+        ${latest.error ? `<p>Error: ${escapeHtml(latest.error)}</p>` : ""}
+      </div>
+    `
+    : '<div class="empty-card">No discovery runs recorded yet.</div>';
+
+  const rows = runs
+    .map((run) => {
+      const details = run.details || {};
+      const meta = runStatusMeta(String(run.status || "running"));
+      return `
+        <tr>
+          <td>${escapeHtml(run.id)}</td>
+          <td>${escapeHtml(run.trigger || "-")}</td>
+          <td><span class="status ${meta.className}">${meta.label}</span></td>
+          <td>${escapeHtml(formatDate(run.started_at))}</td>
+          <td>${escapeHtml(formatDate(run.finished_at))}</td>
+          <td>${escapeHtml(run.query_count ?? details.query_count ?? "-")}</td>
+          <td>${escapeHtml(run.result_count ?? details.candidate_count ?? "-")}</td>
+          <td>${escapeHtml(run.upserted_count ?? details.upserted_count ?? "-")}</td>
+          <td>${escapeHtml(details.query_errors ?? "-")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="panel">
+      <header class="panel-head">
+        <h2>Discovery</h2>
+        <p>Run and monitor automatic org discovery jobs.</p>
+      </header>
+
+      <div class="card-actions">
+        <button class="primary-btn" data-action="run-discovery" ${ui.isBusy ? "disabled" : ""}>Run discovery now</button>
+      </div>
+
+      ${latestSummary}
+
+      <section class="strategy-list">
+        <h3>Recent runs (${runs.length})</h3>
+        <div class="table-wrap">
+          <table class="flat-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Trigger</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Finished</th>
+                <th>Queries</th>
+                <th>Candidates</th>
+                <th>Upserted</th>
+                <th>Errors</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows || '<tr><td colspan="9">No runs yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  `;
+}
+
 function render() {
   syncCurrentQueue();
 
@@ -441,7 +563,9 @@ function render() {
         ? renderActive()
         : ui.tab === "add"
           ? renderAdd()
-          : renderStrategies();
+          : ui.tab === "strategy"
+            ? renderStrategies()
+            : renderDiscovery();
 
   const queueTotal = state.queue_total || state.queue?.length || 0;
   const activeTotal = state.stats?.active_total || state.active_orgs?.length || 0;
@@ -471,6 +595,7 @@ function render() {
         <button class="tab ${ui.tab === "active" ? "active" : ""}" data-action="switch-tab" data-tab="active">All Active Orgs</button>
         <button class="tab ${ui.tab === "add" ? "active" : ""}" data-action="switch-tab" data-tab="add">Add Org</button>
         <button class="tab ${ui.tab === "strategy" ? "active" : ""}" data-action="switch-tab" data-tab="strategy">Strategies</button>
+        <button class="tab ${ui.tab === "discovery" ? "active" : ""}" data-action="switch-tab" data-tab="discovery">Discovery</button>
       </nav>
 
       ${ui.notice ? `<div class="notice">${escapeHtml(ui.notice)}</div>` : ""}
@@ -514,6 +639,11 @@ app.addEventListener("click", async (event) => {
 
   if (action === "toggle-strategy") {
     await toggleStrategy(Number(target.dataset.id), target.dataset.next === "true");
+    return;
+  }
+
+  if (action === "run-discovery") {
+    await runDiscoveryNow();
   }
 });
 

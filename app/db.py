@@ -6,7 +6,7 @@ import json
 import os
 import re
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -333,9 +333,10 @@ def _dedupe_and_enrich() -> None:
 
 
 def init_db() -> None:
-    """Create schema and seed initial org data when database is empty."""
+    """Create schema and bootstrap initial org data when database is empty."""
     org_id_def = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     strategy_id_def = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    run_id_def = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
 
     with get_db() as conn:
         conn.execute(
@@ -425,6 +426,53 @@ def init_db() -> None:
             )
         )
 
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE IF NOT EXISTS discovery_runs (
+                    id {run_id_def},
+                    trigger TEXT NOT NULL DEFAULT 'scheduled',
+                    status TEXT NOT NULL DEFAULT 'running'
+                        CHECK(status IN ('running', 'success', 'failed')),
+                    query_count INTEGER NOT NULL DEFAULT 0,
+                    result_count INTEGER NOT NULL DEFAULT 0,
+                    upserted_count INTEGER NOT NULL DEFAULT 0,
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    error TEXT,
+                    details_json TEXT
+                )
+                """
+            )
+        )
+
+        if IS_POSTGRES:
+            conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS trigger TEXT NOT NULL DEFAULT 'scheduled'"))
+            conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS details_json TEXT"))
+            conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS query_count INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS result_count INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS upserted_count INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS error TEXT"))
+            conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP"))
+        else:
+            for statement in [
+                "ALTER TABLE discovery_runs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'scheduled'",
+                "ALTER TABLE discovery_runs ADD COLUMN details_json TEXT",
+                "ALTER TABLE discovery_runs ADD COLUMN query_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE discovery_runs ADD COLUMN result_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE discovery_runs ADD COLUMN upserted_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE discovery_runs ADD COLUMN error TEXT",
+                "ALTER TABLE discovery_runs ADD COLUMN finished_at TIMESTAMP",
+            ]:
+                try:
+                    conn.execute(text(statement))
+                except Exception:
+                    pass
+
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_discovery_runs_started_at ON discovery_runs(started_at DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_discovery_runs_status ON discovery_runs(status)"))
+
+        # Legacy migration: keep previously logged strategy notes.
         try:
             conn.execute(
                 text(
@@ -451,8 +499,13 @@ def _resolve_bootstrap_file() -> Path | None:
             return candidate
     return None
 
+
 def _bootstrap_if_empty() -> None:
-    bootstrap_enabled = os.getenv("AUTO_BOOTSTRAP_ORGS", os.getenv("AUTO_SEED_ORGS", "true")).strip().lower() not in {"0", "false", "no"}
+    bootstrap_enabled = os.getenv("AUTO_BOOTSTRAP_ORGS", os.getenv("AUTO_SEED_ORGS", "true")).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
     bootstrap_file = _resolve_bootstrap_file()
     if not bootstrap_enabled or bootstrap_file is None:
         return
@@ -538,7 +591,9 @@ def upsert_org(
             if not str(existing.get("source") or "").strip() and str(source or "").strip():
                 updates["source"] = source
 
-            best_description = _best_description(existing.get("description"), description, {**existing, "name": name, "borough": borough, "category": category})
+            best_description = _best_description(
+                existing.get("description"), description, {**existing, "name": name, "borough": borough, "category": category}
+            )
             if best_description != (existing.get("description") or "").strip():
                 updates["description"] = best_description
 
@@ -781,3 +836,150 @@ def set_strategy_active(strategy_id: int, active: bool) -> None:
             text("UPDATE strategies SET active = :active WHERE id = :strategy_id"),
             {"active": active, "strategy_id": strategy_id},
         )
+
+
+def has_recent_running_discovery(max_age_minutes: int = 90) -> bool:
+    with get_db() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT started_at
+                FROM discovery_runs
+                WHERE status = 'running' AND finished_at IS NULL
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+
+    if not row:
+        return False
+
+    started_at = _as_datetime(row.get("started_at"))
+    if not started_at:
+        return True
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    return (datetime.now(timezone.utc) - started_at) < timedelta(minutes=max_age_minutes)
+
+
+def start_discovery_run(query_count: int, trigger: str = "scheduled", details: dict[str, Any] | None = None) -> int:
+    details_json = json.dumps(details or {}, ensure_ascii=False)
+
+    with get_db() as conn:
+        if IS_POSTGRES:
+            inserted = conn.execute(
+                text(
+                    """
+                    INSERT INTO discovery_runs (trigger, status, query_count, details_json)
+                    VALUES (:trigger, 'running', :query_count, :details_json)
+                    RETURNING id
+                    """
+                ),
+                {"trigger": trigger, "query_count": int(query_count), "details_json": details_json},
+            ).mappings().first()
+            if inserted:
+                return int(inserted["id"])
+        else:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO discovery_runs (trigger, status, query_count, details_json)
+                    VALUES (:trigger, 'running', :query_count, :details_json)
+                    """
+                ),
+                {"trigger": trigger, "query_count": int(query_count), "details_json": details_json},
+            )
+            fallback = conn.execute(text("SELECT last_insert_rowid() AS id")).mappings().first()
+            if fallback:
+                return int(fallback["id"])
+
+    raise RuntimeError("Failed to create discovery run")
+
+
+def finish_discovery_run(
+    run_id: int,
+    status: str,
+    result_count: int,
+    upserted_count: int,
+    error: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    status_value = status if status in {"running", "success", "failed"} else "failed"
+    details_json = json.dumps(details, ensure_ascii=False) if details is not None else None
+    error_value = (error or "").strip()[:4000] or None
+
+    with get_db() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE discovery_runs
+                SET status = :status,
+                    result_count = :result_count,
+                    upserted_count = :upserted_count,
+                    error = :error,
+                    details_json = CASE WHEN :details_json IS NULL THEN details_json ELSE :details_json END,
+                    finished_at = CURRENT_TIMESTAMP
+                WHERE id = :run_id
+                """
+            ),
+            {
+                "run_id": int(run_id),
+                "status": status_value,
+                "result_count": int(result_count),
+                "upserted_count": int(upserted_count),
+                "error": error_value,
+                "details_json": details_json,
+            },
+        )
+
+
+def _decode_discovery_row(row: dict[str, Any]) -> dict[str, Any]:
+    decoded = dict(row)
+    raw_details = decoded.get("details_json")
+    parsed_details = None
+    if isinstance(raw_details, str) and raw_details.strip():
+        try:
+            parsed_details = json.loads(raw_details)
+        except Exception:
+            parsed_details = None
+
+    decoded["details"] = parsed_details
+    decoded.pop("details_json", None)
+    return decoded
+
+
+def get_latest_discovery_run() -> dict[str, Any] | None:
+    with get_db() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT *
+                FROM discovery_runs
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+
+    if not row:
+        return None
+    return _decode_discovery_row(dict(row))
+
+
+def get_discovery_runs(limit: int = 10) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT *
+                FROM discovery_runs
+                ORDER BY started_at DESC, id DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": int(limit)},
+        ).mappings().all()
+
+    return [_decode_discovery_row(dict(row)) for row in rows]
