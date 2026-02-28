@@ -16,6 +16,7 @@ from app.db import (
     get_discovery_runs,
     get_latest_discovery_run,
     get_org,
+    get_public_orgs,
     get_review_queue_orgs,
     get_stats,
     get_strategies,
@@ -180,7 +181,7 @@ def _state_payload() -> dict:
 
 
 def _public_payload() -> dict:
-    rows = get_active_orgs()
+    rows = get_public_orgs()
     orgs = []
     for row in rows:
         name = str(row.get("name") or "").strip()

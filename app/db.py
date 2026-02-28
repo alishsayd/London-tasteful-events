@@ -916,6 +916,24 @@ def get_active_orgs(limit: int | None = None) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def get_public_orgs(limit: int | None = None) -> list[dict[str, Any]]:
+    query = f"""
+        SELECT * FROM orgs
+        WHERE {_active_filter_sql()}
+          AND coalesce(issue_state, 'none') IN ('none', 'resolved')
+          AND coalesce(status, 'pending') <> 'rejected'
+        ORDER BY category ASC, borough ASC, name ASC, created_at DESC, id DESC
+    """
+    params: dict[str, Any] = {}
+    if limit:
+        query += " LIMIT :limit"
+        params["limit"] = int(limit)
+
+    with get_db() as conn:
+        rows = conn.execute(text(query), params).mappings().all()
+        return [dict(row) for row in rows]
+
+
 def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit: int = 1000) -> dict[str, Any]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
 

@@ -40,6 +40,7 @@ Default local DB file: `orgs.db` (created automatically).
 ## Pages
 
 - Public browse app: `/` (also `/browse`)
+  - Shows only active orgs that are not in open/snoozed review states
 - Admin console: `/admin`
 
 ## API (Current)
