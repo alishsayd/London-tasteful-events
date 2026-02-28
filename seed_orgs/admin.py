@@ -87,6 +87,28 @@ def _queue_reason(row: dict) -> str:
     return "Needs manual review"
 
 
+def _feedback_implies_reject(feedback: str) -> bool:
+    lower = str(feedback or "").lower()
+    if not lower.strip():
+        return False
+
+    reject_signals = [
+        "reject",
+        "no events",
+        "doesn't have events",
+        "does not have events",
+        "not an event",
+        "reservation-only",
+        "reservation only",
+        "restaurant only",
+        "dining establishment",
+        "remove this org",
+        "skip this org",
+        "not relevant",
+    ]
+    return any(signal in lower for signal in reject_signals)
+
+
 def _state_payload() -> dict:
     queue_rows = get_codex_queue_orgs(limit=300)
     active_rows = get_active_orgs()
@@ -244,11 +266,20 @@ def codex_review_org(org_id):
     if isinstance(review_reason, str):
         reason_text = review_reason.strip() or None
 
+    reject_intent = _feedback_implies_reject(feedback)
+
     if action == "resolve":
         updates["issue_state"] = "resolved"
         updates["review_needed_reason"] = reason_text
         updates["consecutive_failures"] = 0
         updates["consecutive_empty_extracts"] = 0
+
+        if reject_intent:
+            updates["status"] = "rejected"
+            updates["active"] = False
+            updates["crawl_paused"] = True
+            if not updates.get("review_needed_reason"):
+                updates["review_needed_reason"] = "Rejected by admin: not an events org"
     elif action == "snooze":
         updates["issue_state"] = "snoozed"
         updates["review_needed_reason"] = reason_text or _queue_reason(org)
@@ -261,9 +292,13 @@ def codex_review_org(org_id):
         effective_events_url = org.get("events_url")
 
     if not str(effective_events_url or "").strip():
-        updates["issue_state"] = "open"
-        if not updates.get("review_needed_reason"):
-            updates["review_needed_reason"] = "Missing events URL"
+        if action == "open":
+            updates["issue_state"] = "open"
+            if not updates.get("review_needed_reason"):
+                updates["review_needed_reason"] = "Missing events URL"
+        elif action == "snooze":
+            if not updates.get("review_needed_reason"):
+                updates["review_needed_reason"] = "Missing events URL"
 
     update_org(org_id, **updates)
 

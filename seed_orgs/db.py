@@ -77,11 +77,14 @@ def _active_filter_sql() -> str:
 def _queue_condition_sql() -> str:
     return """
     (
-        issue_state = 'open'
-        OR events_url IS NULL
-        OR trim(events_url) = ''
-        OR coalesce(consecutive_failures, 0) >= 3
-        OR coalesce(consecutive_empty_extracts, 0) >= 3
+        coalesce(issue_state, 'none') <> 'resolved'
+        AND (
+            issue_state = 'open'
+            OR events_url IS NULL
+            OR trim(events_url) = ''
+            OR coalesce(consecutive_failures, 0) >= 3
+            OR coalesce(consecutive_empty_extracts, 0) >= 3
+        )
     )
     """
 
