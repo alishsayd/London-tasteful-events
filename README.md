@@ -21,7 +21,7 @@ Default local DB file: `orgs.db` (created automatically).
 
 - `DATABASE_URL`: required in production
 - `ADMIN_USERNAME`: HTTP Basic username; defaults to `admin`
-- `ADMIN_PASSWORD`: when set, all routes except `/healthz` require HTTP Basic Auth
+- `ADMIN_PASSWORD`: when set, admin/API routes require HTTP Basic Auth (public pages `/` and `/browse` stay open)
 - `AUTO_BOOTSTRAP_ORGS`: defaults to `true`; seeds from `orgs_bootstrap.json` when DB is empty
 - `DISCOVERY_SEARCH_PROVIDER`: `duckduckgo` (default) or `openai_web`
 - `OPENAI_API_KEY`: required when `DISCOVERY_SEARCH_PROVIDER=openai_web`
@@ -36,6 +36,11 @@ Default local DB file: `orgs.db` (created automatically).
 - Web service: `london-tasteful-events-admin`
 - Health check: `GET /healthz`
 - Start command: `gunicorn app.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
+
+## Pages
+
+- Public browse app: `/` (also `/browse`)
+- Admin console: `/admin`
 
 ## API (Current)
 

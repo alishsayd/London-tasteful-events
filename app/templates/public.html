@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>London Tasteful Events - Browse Orgs</title>
+    <style>
+      :root {
+        --bg: #f2f5f2;
+        --card: #ffffff;
+        --ink: #122023;
+        --muted: #5b686b;
+        --line: #d8e0df;
+        --accent: #0f6e65;
+        --accent-soft: #e5f5f2;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(1200px 500px at 100% -10%, #deece9 0%, transparent 70%),
+          radial-gradient(1000px 450px at -10% 0%, #eaf0e8 0%, transparent 70%),
+          var(--bg);
+      }
+
+      .shell {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 18px 14px 28px;
+      }
+
+      .hero {
+        padding: 14px 14px 12px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: 14px;
+      }
+
+      .kicker {
+        margin: 0;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      h1 {
+        margin: 4px 0 6px;
+        font-size: 24px;
+        line-height: 1.15;
+      }
+
+      .sub {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .top-stats {
+        margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .stat-chip {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 5px 10px;
+        font-size: 12px;
+        background: #fbfdfc;
+      }
+
+      .controls {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--card) 94%, var(--accent-soft) 6%);
+        backdrop-filter: blur(4px);
+      }
+
+      .control-grid {
+        display: grid;
+        grid-template-columns: 1.3fr 1fr 1fr auto;
+        gap: 8px;
+      }
+
+      .field {
+        display: grid;
+        gap: 4px;
+      }
+
+      .field label {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .field input,
+      .field select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        font-size: 14px;
+        padding: 9px 10px;
+        background: #fff;
+        color: var(--ink);
+      }
+
+      .btn {
+        border: 1px solid #145b54;
+        color: #fff;
+        background: var(--accent);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .results {
+        margin-top: 10px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .category-block {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--card);
+        overflow: hidden;
+      }
+
+      .category-head {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        background: #f9fbfa;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+      }
+
+      .category-head h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .count {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .borough-block {
+        border-top: 1px solid var(--line);
+      }
+
+      .borough-head {
+        margin: 0;
+        padding: 8px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        background: #fbfdfc;
+      }
+
+      .org-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 8px 12px;
+        border-top: 1px dashed #e4ebea;
+      }
+
+      .org-row:first-child {
+        border-top: none;
+      }
+
+      .org-name {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1.2;
+      }
+
+      .org-meta {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .org-links {
+        display: inline-flex;
+        gap: 6px;
+      }
+
+      .org-link {
+        text-decoration: none;
+        font-size: 12px;
+        padding: 6px 8px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        color: #12453f;
+        background: #f8fcfb;
+        white-space: nowrap;
+      }
+
+      .org-link.primary {
+        border-color: #92d0c8;
+        background: var(--accent-soft);
+        color: #0d4f47;
+      }
+
+      .empty {
+        border: 1px dashed #b8c6c5;
+        border-radius: 12px;
+        background: #f9fcfb;
+        color: var(--muted);
+        padding: 24px 12px;
+        text-align: center;
+      }
+
+      @media (max-width: 780px) {
+        .control-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .btn {
+          grid-column: span 2;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="kicker">London Tasteful Events</p>
+        <h1>Browse Organizations</h1>
+        <p class="sub">Utility-first directory for event-source organizations. Open events pages in a new tab.</p>
+        <div class="top-stats" id="summary-stats"></div>
+      </header>
+
+      <section class="controls">
+        <div class="control-grid">
+          <div class="field">
+            <label for="search-input">Search</label>
+            <input id="search-input" type="search" placeholder="Name, borough, category" />
+          </div>
+          <div class="field">
+            <label for="category-filter">Category</label>
+            <select id="category-filter"></select>
+          </div>
+          <div class="field">
+            <label for="borough-filter">Borough</label>
+            <select id="borough-filter"></select>
+          </div>
+          <button class="btn" id="clear-filters" type="button">Clear</button>
+        </div>
+      </section>
+
+      <section class="results" id="results"></section>
+    </main>
+
+    <script>
+      window.PUBLIC_PAYLOAD = {{ payload | tojson }};
+    </script>
+    <script>
+      const payload = window.PUBLIC_PAYLOAD || {};
+      const allOrgs = Array.isArray(payload.orgs) ? payload.orgs : [];
+
+      const ui = {
+        query: "",
+        category: "all",
+        borough: "all",
+      };
+
+      const els = {
+        search: document.getElementById("search-input"),
+        category: document.getElementById("category-filter"),
+        borough: document.getElementById("borough-filter"),
+        clear: document.getElementById("clear-filters"),
+        stats: document.getElementById("summary-stats"),
+        results: document.getElementById("results"),
+      };
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function clean(value, fallback = "") {
+        const text = String(value ?? "").trim();
+        return text || fallback;
+      }
+
+      function normalize(value) {
+        return clean(value).toLowerCase();
+      }
+
+      function titleCase(value) {
+        return clean(value)
+          .split(" ")
+          .filter(Boolean)
+          .map((part) => part[0].toUpperCase() + part.slice(1))
+          .join(" ");
+      }
+
+      function eventTarget(org) {
+        return clean(org.events_url) || clean(org.homepage);
+      }
+
+      function orgSearchBlob(org) {
+        return normalize(
+          [org.name, org.category, org.borough, org.events_url, org.homepage]
+            .map((item) => clean(item))
+            .join(" ")
+        );
+      }
+
+      function uniqueValues(items, key) {
+        const values = new Set();
+        for (const item of items) {
+          const value = clean(item[key], key === "borough" ? "Unspecified" : "other");
+          values.add(value);
+        }
+        return Array.from(values).sort((a, b) => a.localeCompare(b));
+      }
+
+      function writeFilterOptions() {
+        const categories = uniqueValues(allOrgs, "category");
+        const boroughs = uniqueValues(allOrgs, "borough");
+
+        els.category.innerHTML = `<option value="all">All categories</option>${categories
+          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(titleCase(item))}</option>`)
+          .join("")}`;
+
+        els.borough.innerHTML = `<option value="all">All boroughs</option>${boroughs
+          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`)
+          .join("")}`;
+      }
+
+      function filterOrgs() {
+        const query = normalize(ui.query);
+        return allOrgs.filter((org) => {
+          const category = clean(org.category, "other");
+          const borough = clean(org.borough, "Unspecified");
+
+          if (ui.category !== "all" && category !== ui.category) return false;
+          if (ui.borough !== "all" && borough !== ui.borough) return false;
+          if (query && !orgSearchBlob(org).includes(query)) return false;
+          return true;
+        });
+      }
+
+      function groupOrgs(orgs) {
+        const categories = new Map();
+
+        for (const org of orgs) {
+          const category = clean(org.category, "other");
+          const borough = clean(org.borough, "Unspecified");
+
+          if (!categories.has(category)) categories.set(category, new Map());
+          const boroughs = categories.get(category);
+          if (!boroughs.has(borough)) boroughs.set(borough, []);
+          boroughs.get(borough).push(org);
+        }
+
+        for (const boroughs of categories.values()) {
+          for (const list of boroughs.values()) {
+            list.sort((a, b) => clean(a.name).localeCompare(clean(b.name)));
+          }
+        }
+
+        return categories;
+      }
+
+      function renderStats(orgs) {
+        const categoryCount = new Set(orgs.map((org) => clean(org.category, "other"))).size;
+        const boroughCount = new Set(orgs.map((org) => clean(org.borough, "Unspecified"))).size;
+
+        els.stats.innerHTML = `
+          <span class="stat-chip">${escapeHtml(orgs.length)} orgs visible</span>
+          <span class="stat-chip">${escapeHtml(categoryCount)} categories</span>
+          <span class="stat-chip">${escapeHtml(boroughCount)} borough buckets</span>
+        `;
+      }
+
+      function renderOrgRow(org) {
+        const name = clean(org.name, "Unnamed");
+        const category = clean(org.category, "other");
+        const borough = clean(org.borough, "Unspecified");
+        const eventsUrl = clean(org.events_url);
+        const homepage = clean(org.homepage);
+        const primaryUrl = eventTarget(org);
+
+        const links = [];
+        if (eventsUrl) {
+          links.push(
+            `<a class="org-link primary" href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer noopener">Events</a>`
+          );
+        }
+        if (homepage && homepage !== eventsUrl) {
+          links.push(
+            `<a class="org-link" href="${escapeHtml(homepage)}" target="_blank" rel="noreferrer noopener">Website</a>`
+          );
+        }
+        if (!links.length) {
+          links.push(`<span class="org-link">No link</span>`);
+        }
+
+        const nameMarkup = primaryUrl
+          ? `<a href="${escapeHtml(primaryUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(name)}</a>`
+          : escapeHtml(name);
+
+        return `
+          <div class="org-row">
+            <div>
+              <p class="org-name">${nameMarkup}</p>
+              <div class="org-meta">${escapeHtml(titleCase(category))} • ${escapeHtml(borough)}</div>
+            </div>
+            <div class="org-links">${links.join("")}</div>
+          </div>
+        `;
+      }
+
+      function renderResults() {
+        const filtered = filterOrgs();
+        renderStats(filtered);
+
+        if (!filtered.length) {
+          els.results.innerHTML = `<div class="empty">No organizations match the current filters.</div>`;
+          return;
+        }
+
+        const grouped = groupOrgs(filtered);
+        const categoryKeys = Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b));
+
+        const html = categoryKeys
+          .map((category) => {
+            const boroughMap = grouped.get(category);
+            const boroughKeys = Array.from(boroughMap.keys()).sort((a, b) => a.localeCompare(b));
+            const categoryCount = boroughKeys.reduce((acc, borough) => acc + boroughMap.get(borough).length, 0);
+
+            const boroughHtml = boroughKeys
+              .map((borough) => {
+                const rows = boroughMap.get(borough);
+                return `
+                  <section class="borough-block">
+                    <h3 class="borough-head">${escapeHtml(borough)} (${escapeHtml(rows.length)})</h3>
+                    ${rows.map((org) => renderOrgRow(org)).join("")}
+                  </section>
+                `;
+              })
+              .join("");
+
+            return `
+              <section class="category-block">
+                <header class="category-head">
+                  <h2>${escapeHtml(titleCase(category))}</h2>
+                  <span class="count">${escapeHtml(categoryCount)} orgs</span>
+                </header>
+                ${boroughHtml}
+              </section>
+            `;
+          })
+          .join("");
+
+        els.results.innerHTML = html;
+      }
+
+      function wireEvents() {
+        els.search.addEventListener("input", (event) => {
+          ui.query = event.target.value || "";
+          renderResults();
+        });
+
+        els.category.addEventListener("change", (event) => {
+          ui.category = event.target.value || "all";
+          renderResults();
+        });
+
+        els.borough.addEventListener("change", (event) => {
+          ui.borough = event.target.value || "all";
+          renderResults();
+        });
+
+        els.clear.addEventListener("click", () => {
+          ui.query = "";
+          ui.category = "all";
+          ui.borough = "all";
+          els.search.value = "";
+          els.category.value = "all";
+          els.borough.value = "all";
+          renderResults();
+        });
+      }
+
+      writeFilterOptions();
+      wireEvents();
+      renderResults();
+    </script>
+  </body>
+</html>

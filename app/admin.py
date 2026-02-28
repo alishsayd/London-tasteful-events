@@ -45,7 +45,8 @@ def _auth_enabled() -> bool:
 
 
 def _is_allowed_without_auth(path: str) -> bool:
-    return path == "/healthz"
+    public_paths = {"/", "/browse", "/healthz", "/favicon.ico"}
+    return path in public_paths
 
 
 @app.before_request
@@ -178,7 +179,39 @@ def _state_payload() -> dict:
     }
 
 
+def _public_payload() -> dict:
+    rows = get_active_orgs()
+    orgs = []
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+
+        events_url = str(row.get("events_url") or "").strip() or None
+        homepage = str(row.get("homepage") or "").strip() or None
+
+        orgs.append(
+            {
+                "id": int(row["id"]),
+                "name": name,
+                "borough": str(row.get("borough") or "").strip() or "Unspecified",
+                "category": str(row.get("category") or "").strip() or "other",
+                "events_url": events_url,
+                "homepage": homepage,
+            }
+        )
+
+    orgs.sort(key=lambda item: (item["category"].lower(), item["borough"].lower(), item["name"].lower()))
+    return {"orgs": orgs}
+
+
 @app.route("/")
+@app.route("/browse")
+def browse():
+    return render_template("public.html", payload=_public_payload())
+
+
+@app.route("/admin")
 def home():
     payload = _state_payload()
     return render_template("admin.html", stats=get_stats(), payload=payload)
@@ -443,7 +476,8 @@ def main():
     args = parser.parse_args()
 
     init_db()
-    print(f"\n  Org Curation:       http://{args.host}:{args.port}")
+    print(f"\n  Browse Orgs:        http://{args.host}:{args.port}")
+    print(f"  Org Curation:       http://{args.host}:{args.port}/admin")
     print(f"  Export active:      http://{args.host}:{args.port}/export\n")
     app.run(host=args.host, port=args.port, debug=True)
 
