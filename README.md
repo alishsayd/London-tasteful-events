@@ -20,6 +20,8 @@ Default local DB file: `orgs.db` (created automatically).
 ## Environment Variables
 
 - `DATABASE_URL`: required in production
+- `ADMIN_USERNAME`: HTTP Basic username; defaults to `admin`
+- `ADMIN_PASSWORD`: when set, all routes except `/healthz` require HTTP Basic Auth
 - `AUTO_BOOTSTRAP_ORGS`: defaults to `true`; seeds from `orgs_bootstrap.json` when DB is empty
 - `DISCOVERY_SEARCH_PROVIDER`: `duckduckgo` (default) or `openai_web`
 - `OPENAI_API_KEY`: required when `DISCOVERY_SEARCH_PROVIDER=openai_web`

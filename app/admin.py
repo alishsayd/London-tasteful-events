@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hmac
+import os
 from datetime import date, datetime, timedelta, timezone
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from app.db import (
     add_strategy,
@@ -27,6 +29,45 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 
 # Ensure schema exists when running under WSGI/Gunicorn.
 init_db()
+
+
+def _auth_required() -> Response:
+    return Response(
+        "Authentication required.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="London Tasteful Events Admin"'},
+    )
+
+
+def _auth_enabled() -> bool:
+    return bool(str(os.getenv("ADMIN_PASSWORD") or "").strip())
+
+
+def _is_allowed_without_auth(path: str) -> bool:
+    return path == "/healthz"
+
+
+@app.before_request
+def require_basic_auth():
+    if _is_allowed_without_auth(request.path):
+        return None
+
+    if not _auth_enabled():
+        return None
+
+    expected_username = str(os.getenv("ADMIN_USERNAME") or "admin").strip() or "admin"
+    expected_password = str(os.getenv("ADMIN_PASSWORD") or "").strip()
+    auth = request.authorization
+    if not auth or (auth.type or "").lower() != "basic":
+        return _auth_required()
+
+    provided_username = str(auth.username or "")
+    provided_password = str(auth.password or "")
+    if not hmac.compare_digest(provided_username, expected_username):
+        return _auth_required()
+    if not hmac.compare_digest(provided_password, expected_password):
+        return _auth_required()
+    return None
 
 
 def _json_safe(value):
