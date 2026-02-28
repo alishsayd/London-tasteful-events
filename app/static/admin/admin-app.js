@@ -262,6 +262,48 @@ async function runDiscoveryNow() {
   }
 }
 
+async function moveActiveOrgToQueue(orgId) {
+  if (!orgId) return;
+  const org = (state.active_orgs || []).find((item) => item.id === orgId) || null;
+  const isAlreadyOpen = String(org?.issue_state || "") === "open";
+  const alreadyInQueue = (state.queue || []).some((item) => item.id === orgId);
+
+  if (isAlreadyOpen && alreadyInQueue) {
+    ui.tab = "queue";
+    ui.currentQueueId = orgId;
+    setNotice(`Opened "${org?.name || `Org #${orgId}`}" in Review Queue.`);
+    render();
+    return;
+  }
+
+  ui.isBusy = true;
+  render();
+  try {
+    const payload = await apiRequest(`/api/admin/review/${orgId}`, {
+      method: "POST",
+      body: JSON.stringify({
+        action: "open",
+        review_needed_reason: "Manual review requested from Active Orgs",
+      }),
+    });
+
+    state = payload.state || state;
+    syncCurrentQueue();
+
+    const existsInQueue = (state.queue || []).some((item) => item.id === orgId);
+    ui.tab = "queue";
+    if (existsInQueue) {
+      ui.currentQueueId = orgId;
+    }
+    setNotice(`Moved "${org?.name || `Org #${orgId}`}" to Review Queue.`);
+  } catch (error) {
+    setNotice(error.message);
+  } finally {
+    ui.isBusy = false;
+    render();
+  }
+}
+
 function renderQueue() {
   const queue = state.queue || [];
   const current = queue.find((item) => item.id === ui.currentQueueId) || null;
@@ -343,7 +385,9 @@ function renderQueue() {
 function renderActive() {
   const rows = (state.active_orgs || [])
     .map(
-      (item) => `
+      (item) => {
+        const isOpenIssue = String(item.issue_state || "") === "open";
+        return `
       <tr>
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.borough || "-")}</td>
@@ -355,16 +399,25 @@ function renderActive() {
         <td>${escapeHtml(item.consecutive_failures || 0)}</td>
         <td>${escapeHtml(item.consecutive_empty_extracts || 0)}</td>
         <td>${item.is_new ? "New" : ""}</td>
+        <td>
+          <button class="ghost-btn mini-btn" data-action="queue-from-active" data-id="${item.id}" ${ui.isBusy ? "disabled" : ""}>
+            ${isOpenIssue ? "Open in Queue" : "Move to Queue"}
+          </button>
+        </td>
       </tr>
     `
+      }
     )
     .join("");
 
   return `
     <section class="panel">
-      <header class="panel-head">
-        <h2>All Active Orgs</h2>
-        <p>Flat table extract.</p>
+      <header class="panel-head panel-head-row">
+        <div>
+          <h2>All Active Orgs</h2>
+          <p>Flat table extract.</p>
+        </div>
+        <button class="primary-btn" data-action="go-add-org" ${ui.isBusy ? "disabled" : ""}>Add org</button>
       </header>
 
       <div class="table-wrap">
@@ -381,10 +434,11 @@ function renderActive() {
               <th>Failures</th>
               <th>Empty</th>
               <th>New</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            ${rows || '<tr><td colspan="10">No active orgs.</td></tr>'}
+            ${rows || '<tr><td colspan="11">No active orgs.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -395,9 +449,12 @@ function renderActive() {
 function renderAdd() {
   return `
     <section class="panel">
-      <header class="panel-head">
-        <h2>Add Specific Organization</h2>
-        <p>Manual additions go straight into the main org database.</p>
+      <header class="panel-head panel-head-row">
+        <div>
+          <h2>Add Specific Organization</h2>
+          <p>Manual additions go straight into the main org database.</p>
+        </div>
+        <button class="ghost-btn" data-action="back-to-active" ${ui.isBusy ? "disabled" : ""}>Back to Active Orgs</button>
       </header>
 
       <form class="stack-form" data-action="manual-submit">
@@ -567,8 +624,11 @@ function render() {
             ? renderStrategies()
             : renderDiscovery();
 
-  const queueTotal = state.queue_total || state.queue?.length || 0;
+  const navTab = ui.tab === "add" ? "active" : ui.tab;
+  const openIssues = state.stats?.open_issues || 0;
   const activeTotal = state.stats?.active_total || state.active_orgs?.length || 0;
+  const strategyTotal = (state.strategies || []).length;
+  const discoveryTotal = (state.discovery_runs || []).length;
 
   app.innerHTML = `
     <div class="curation-shell">
@@ -579,24 +639,27 @@ function render() {
             <h1>Org Curation Console</h1>
             <p class="sub">Rolling issue queue + flat active-org extract.</p>
           </div>
-          <button class="ghost-btn" data-action="refresh" ${ui.isBusy ? "disabled" : ""}>Refresh</button>
         </div>
 
         <div class="metrics">
-          <div class="metric"><span>Queue</span><strong>${escapeHtml(queueTotal)}</strong></div>
-          <div class="metric"><span>Active Orgs</span><strong>${escapeHtml(activeTotal)}</strong></div>
-          <div class="metric"><span>Open Issues</span><strong>${escapeHtml(state.stats?.open_issues || 0)}</strong></div>
-          <div class="metric"><span>Total</span><strong>${escapeHtml(state.stats?.total || 0)}</strong></div>
+          <button class="metric metric-nav ${navTab === "queue" ? "active" : ""}" data-action="switch-tab" data-tab="queue" ${ui.isBusy ? "disabled" : ""}>
+            <span>Open Issues</span>
+            <strong>${escapeHtml(openIssues)}</strong>
+          </button>
+          <button class="metric metric-nav ${navTab === "active" ? "active" : ""}" data-action="switch-tab" data-tab="active" ${ui.isBusy ? "disabled" : ""}>
+            <span>Active Orgs</span>
+            <strong>${escapeHtml(activeTotal)}</strong>
+          </button>
+          <button class="metric metric-nav ${navTab === "strategy" ? "active" : ""}" data-action="switch-tab" data-tab="strategy" ${ui.isBusy ? "disabled" : ""}>
+            <span>Strategies</span>
+            <strong>${escapeHtml(strategyTotal)}</strong>
+          </button>
+          <button class="metric metric-nav ${navTab === "discovery" ? "active" : ""}" data-action="switch-tab" data-tab="discovery" ${ui.isBusy ? "disabled" : ""}>
+            <span>Discovery</span>
+            <strong>${escapeHtml(discoveryTotal)}</strong>
+          </button>
         </div>
       </header>
-
-      <nav class="tab-nav">
-        <button class="tab ${ui.tab === "queue" ? "active" : ""}" data-action="switch-tab" data-tab="queue">Review Queue</button>
-        <button class="tab ${ui.tab === "active" ? "active" : ""}" data-action="switch-tab" data-tab="active">All Active Orgs</button>
-        <button class="tab ${ui.tab === "add" ? "active" : ""}" data-action="switch-tab" data-tab="add">Add Org</button>
-        <button class="tab ${ui.tab === "strategy" ? "active" : ""}" data-action="switch-tab" data-tab="strategy">Strategies</button>
-        <button class="tab ${ui.tab === "discovery" ? "active" : ""}" data-action="switch-tab" data-tab="discovery">Discovery</button>
-      </nav>
 
       ${ui.notice ? `<div class="notice">${escapeHtml(ui.notice)}</div>` : ""}
       ${body}
@@ -616,8 +679,15 @@ app.addEventListener("click", async (event) => {
     return;
   }
 
-  if (action === "refresh") {
-    await refreshState();
+  if (action === "go-add-org") {
+    ui.tab = "add";
+    render();
+    return;
+  }
+
+  if (action === "back-to-active") {
+    ui.tab = "active";
+    render();
     return;
   }
 
@@ -644,6 +714,11 @@ app.addEventListener("click", async (event) => {
 
   if (action === "run-discovery") {
     await runDiscoveryNow();
+    return;
+  }
+
+  if (action === "queue-from-active") {
+    await moveActiveOrgToQueue(Number(target.dataset.id));
   }
 });
 
