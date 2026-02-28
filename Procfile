@@ -1,1 +1,1 @@
-web: gunicorn seed_orgs.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4
+web: gunicorn app.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4

@@ -12,7 +12,7 @@ const ORG_TYPES = [
 
 const app = document.getElementById("app");
 
-let state = window.CODEX_INITIAL_STATE || {
+let state = window.APP_INITIAL_STATE || {
   stats: { pending: 0, approved: 0, maybe: 0, rejected: 0, total: 0, active_total: 0, queue_total: 0, open_issues: 0 },
   queue_total: 0,
   queue: [],
@@ -99,7 +99,7 @@ async function refreshState() {
   ui.isBusy = true;
   render();
   try {
-    state = await apiRequest("/api/codex/state");
+    state = await apiRequest("/api/admin/state");
     syncCurrentQueue();
   } finally {
     ui.isBusy = false;
@@ -116,7 +116,7 @@ async function saveQueueAction(action) {
   ui.isBusy = true;
   render();
   try {
-    const payload = await apiRequest(`/api/codex/review/${current.id}`, {
+    const payload = await apiRequest(`/api/admin/review/${current.id}`, {
       method: "POST",
       body: JSON.stringify({
         action,
@@ -198,7 +198,7 @@ async function saveStrategy() {
   ui.isBusy = true;
   render();
   try {
-    await apiRequest("/api/codex/strategies", {
+    await apiRequest("/api/admin/strategies", {
       method: "POST",
       body: JSON.stringify({ text }),
     });
@@ -217,7 +217,7 @@ async function toggleStrategy(strategyId, active) {
   ui.isBusy = true;
   render();
   try {
-    await apiRequest(`/api/codex/strategies/${strategyId}`, {
+    await apiRequest(`/api/admin/strategies/${strategyId}`, {
       method: "PATCH",
       body: JSON.stringify({ active }),
     });
@@ -451,7 +451,7 @@ function render() {
       <header class="top">
         <div class="top-row">
           <div>
-            <p class="eyebrow">Codex Workstream</p>
+            <p class="eyebrow">London Tasteful Events</p>
             <h1>Org Curation Console</h1>
             <p class="sub">Rolling issue queue + flat active-org extract.</p>
           </div>

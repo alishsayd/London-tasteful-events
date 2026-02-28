@@ -5,17 +5,17 @@ Generates search queries from borough × category combinations,
 then parses results into candidate orgs for review.
 
 Usage:
-    python -m seed_orgs.discover                  # run all strategies
-    python -m seed_orgs.discover --borough Hackney # one borough
-    python -m seed_orgs.discover --category gallery # one category
-    python -m seed_orgs.discover --from-file seeds.json  # import a JSON file
+    python -m app.discover                  # run all strategies
+    python -m app.discover --borough Hackney # one borough
+    python -m app.discover --category gallery # one category
+    python -m app.discover --from-file seeds.json  # import a JSON file
 """
 
 import argparse
 import json
 import sys
 
-from seed_orgs.db import init_db, upsert_org, get_stats
+from app.db import init_db, upsert_org, get_stats
 
 # London boroughs — focus on the ones with the densest cultural scenes first
 BOROUGHS = [
@@ -183,7 +183,7 @@ def main():
     print("  2. Run with --export-queries queries.json to export")
     print("  3. Use Claude to run searches and save results as JSON")
     print("  4. Import results with --from-file results.json")
-    print("  5. Review in admin panel: python -m seed_orgs.admin")
+    print("  5. Review in admin panel: python -m app.admin")
 
 
 if __name__ == "__main__":

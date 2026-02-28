@@ -1,3 +1,3 @@
 """Default entrypoint — start the admin panel."""
-from seed_orgs.admin import main
+from app.admin import main
 main()

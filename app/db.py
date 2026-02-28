@@ -1,4 +1,4 @@
-"""Database helpers for candidate organisations and codex review workflow."""
+"""Database helpers for candidate organisations and admin review workflow."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from sqlalchemy import bindparam, create_engine, text
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SQLITE_PATH = PROJECT_ROOT / "orgs.db"
-SEED_DATA_PATH = PROJECT_ROOT / "seed_data.json"
+BOOTSTRAP_ORGS_PATH = PROJECT_ROOT / "orgs_bootstrap.json"
+LEGACY_BOOTSTRAP_ORGS_PATH = PROJECT_ROOT / "seed_data.json"
 
 
 def _normalize_database_url(raw_url: str | None) -> str:
@@ -414,7 +415,7 @@ def init_db() -> None:
         conn.execute(
             text(
                 f"""
-                CREATE TABLE IF NOT EXISTS codex_strategies (
+                CREATE TABLE IF NOT EXISTS strategies (
                     id {strategy_id_def},
                     text TEXT NOT NULL,
                     active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -424,20 +425,43 @@ def init_db() -> None:
             )
         )
 
-    _seed_if_empty()
+        try:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO strategies (text, active, created_at)
+                    SELECT legacy.text, legacy.active, legacy.created_at
+                    FROM codex_strategies AS legacy
+                    LEFT JOIN strategies AS current
+                      ON current.text = legacy.text AND current.created_at = legacy.created_at
+                    WHERE current.id IS NULL
+                    """
+                )
+            )
+        except Exception:
+            pass
+
+    _bootstrap_if_empty()
     _dedupe_and_enrich()
 
 
-def _seed_if_empty() -> None:
-    seed_enabled = os.getenv("AUTO_SEED_ORGS", "true").strip().lower() not in {"0", "false", "no"}
-    if not seed_enabled or not SEED_DATA_PATH.exists():
+def _resolve_bootstrap_file() -> Path | None:
+    for candidate in (BOOTSTRAP_ORGS_PATH, LEGACY_BOOTSTRAP_ORGS_PATH):
+        if candidate.exists():
+            return candidate
+    return None
+
+def _bootstrap_if_empty() -> None:
+    bootstrap_enabled = os.getenv("AUTO_BOOTSTRAP_ORGS", os.getenv("AUTO_SEED_ORGS", "true")).strip().lower() not in {"0", "false", "no"}
+    bootstrap_file = _resolve_bootstrap_file()
+    if not bootstrap_enabled or bootstrap_file is None:
         return
 
     stats = get_stats()
     if stats.get("total", 0) > 0:
         return
 
-    with SEED_DATA_PATH.open() as handle:
+    with bootstrap_file.open() as handle:
         payload = json.load(handle)
 
     if not isinstance(payload, list):
@@ -453,7 +477,7 @@ def _seed_if_empty() -> None:
             description=item.get("description"),
             borough=item.get("borough"),
             category=item.get("category"),
-            source=item.get("source", "seed_data"),
+            source=item.get("source", "bootstrap_file"),
         )
 
 
@@ -658,7 +682,7 @@ def get_stats() -> dict[str, int]:
     return stats
 
 
-def get_codex_queue_orgs(limit: int = 250) -> list[dict[str, Any]]:
+def get_review_queue_orgs(limit: int = 250) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
             text(
@@ -703,10 +727,10 @@ def get_active_orgs(limit: int | None = None) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
-def get_codex_strategies() -> list[dict[str, Any]]:
+def get_strategies() -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
-            text("SELECT id, text, active, created_at FROM codex_strategies ORDER BY created_at DESC, id DESC")
+            text("SELECT id, text, active, created_at FROM strategies ORDER BY created_at DESC, id DESC")
         ).mappings().all()
     return [
         {
@@ -719,13 +743,13 @@ def get_codex_strategies() -> list[dict[str, Any]]:
     ]
 
 
-def add_codex_strategy(text_value: str, active: bool = True) -> int:
+def add_strategy(text_value: str, active: bool = True) -> int:
     with get_db() as conn:
         if IS_POSTGRES:
             inserted = conn.execute(
                 text(
                     """
-                    INSERT INTO codex_strategies (text, active)
+                    INSERT INTO strategies (text, active)
                     VALUES (:text, :active)
                     RETURNING id
                     """
@@ -738,7 +762,7 @@ def add_codex_strategy(text_value: str, active: bool = True) -> int:
             conn.execute(
                 text(
                     """
-                    INSERT INTO codex_strategies (text, active)
+                    INSERT INTO strategies (text, active)
                     VALUES (:text, :active)
                     """
                 ),
@@ -751,9 +775,9 @@ def add_codex_strategy(text_value: str, active: bool = True) -> int:
     raise RuntimeError("Failed to insert strategy")
 
 
-def set_codex_strategy_active(strategy_id: int, active: bool) -> None:
+def set_strategy_active(strategy_id: int, active: bool) -> None:
     with get_db() as conn:
         conn.execute(
-            text("UPDATE codex_strategies SET active = :active WHERE id = :strategy_id"),
+            text("UPDATE strategies SET active = :active WHERE id = :strategy_id"),
             {"active": active, "strategy_id": strategy_id},
         )

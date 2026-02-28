@@ -2,8 +2,8 @@
 Flask admin panel for reviewing candidate orgs.
 
 Usage:
-    python -m seed_orgs.admin          # start on port 5000
-    python -m seed_orgs.admin --port 8080
+    python -m app.admin          # start on port 5000
+    python -m app.admin --port 8080
 """
 
 from __future__ import annotations
@@ -11,17 +11,17 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timedelta, timezone
 
-from flask import Flask, jsonify, redirect, render_template, request
+from flask import Flask, jsonify, render_template, request
 
-from seed_orgs.db import (
-    add_codex_strategy,
+from app.db import (
+    add_strategy,
     get_active_orgs,
-    get_codex_queue_orgs,
-    get_codex_strategies,
+    get_review_queue_orgs,
+    get_strategies,
     get_org,
     get_stats,
     init_db,
-    set_codex_strategy_active,
+    set_strategy_active,
     update_org,
     upsert_org,
 )
@@ -31,16 +31,13 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # Ensure schema exists when running under WSGI/Gunicorn (main() is not executed there).
 init_db()
 
-
 def _json_safe(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
 
-
 def _serialize_row(row: dict) -> dict:
     return {key: _json_safe(value) for key, value in row.items()}
-
 
 def _parse_dt(value) -> datetime | None:
     if isinstance(value, datetime):
@@ -56,13 +53,11 @@ def _parse_dt(value) -> datetime | None:
             return None
     return None
 
-
 def _is_new_org(row: dict) -> bool:
     created_at = _parse_dt(row.get("created_at"))
     if not created_at:
         return False
     return created_at >= (datetime.now(timezone.utc) - timedelta(days=7))
-
 
 def _queue_reason(row: dict) -> str:
     custom_reason = str(row.get("review_needed_reason") or "").strip()
@@ -85,7 +80,6 @@ def _queue_reason(row: dict) -> str:
 
     return "Needs manual review"
 
-
 def _feedback_implies_reject(feedback: str) -> bool:
     lower = str(feedback or "").lower()
     if not lower.strip():
@@ -107,9 +101,8 @@ def _feedback_implies_reject(feedback: str) -> bool:
     ]
     return any(signal in lower for signal in reject_signals)
 
-
 def _state_payload() -> dict:
-    queue_rows = get_codex_queue_orgs(limit=300)
+    queue_rows = get_review_queue_orgs(limit=300)
     active_rows = get_active_orgs()
 
     queue_payload = []
@@ -129,21 +122,13 @@ def _state_payload() -> dict:
         "queue_total": len(queue_payload),
         "queue": queue_payload,
         "active_orgs": active_payload,
-        "strategies": [_serialize_row(item) for item in get_codex_strategies()],
+        "strategies": [_serialize_row(item) for item in get_strategies()],
     }
-
 
 @app.route("/")
 def home():
     payload = _state_payload()
-    return render_template("codex_review.html", stats=get_stats(), payload=payload)
-
-
-@app.route("/codex")
-def codex_redirect():
-    return redirect("/", code=302)
-
-
+    return render_template("admin.html", stats=get_stats(), payload=payload)
 
 
 @app.route("/api/orgs", methods=["POST"])
@@ -170,7 +155,6 @@ def add_org():
 
     return jsonify({"ok": True, "id": org_id})
 
-
 @app.route("/api/orgs/bulk", methods=["POST"])
 def bulk_add():
     data = request.json
@@ -196,32 +180,27 @@ def bulk_add():
 
     return jsonify({"ok": True, "count": len(ids), "ids": ids})
 
-
 @app.route("/healthz")
 def healthz():
     init_db()
     return jsonify({"ok": True})
-
 
 @app.route("/api/stats")
 def stats():
     init_db()
     return jsonify(get_stats())
 
-
 @app.route("/export")
 def export():
     """Export active orgs as JSON."""
     return jsonify(get_active_orgs())
 
-
-@app.route("/api/codex/state")
-def codex_state():
+@app.route("/api/admin/state")
+def admin_state():
     return jsonify(_state_payload())
 
-
-@app.route("/api/codex/review/<int:org_id>", methods=["POST"])
-def codex_review_org(org_id):
+@app.route("/api/admin/review/<int:org_id>", methods=["POST"])
+def review_org(org_id):
     data = request.json or {}
 
     org = get_org(org_id)
@@ -305,34 +284,29 @@ def codex_review_org(org_id):
         }
     )
 
-
-
-
-@app.route("/api/codex/strategies", methods=["GET", "POST"])
-def codex_strategies():
+@app.route("/api/admin/strategies", methods=["GET", "POST"])
+def strategies():
     if request.method == "GET":
-        return jsonify({"strategies": [_serialize_row(item) for item in get_codex_strategies()]})
+        return jsonify({"strategies": [_serialize_row(item) for item in get_strategies()]})
 
     data = request.json or {}
     text_value = str(data.get("text") or "").strip()
     if not text_value:
         return jsonify({"error": "text required"}), 400
 
-    strategy_id = add_codex_strategy(text_value=text_value, active=True)
-    strategies = get_codex_strategies()
+    strategy_id = add_strategy(text_value=text_value, active=True)
+    strategies = get_strategies()
     strategy = next((item for item in strategies if int(item["id"]) == strategy_id), None)
     return jsonify({"ok": True, "strategy": _serialize_row(strategy) if strategy else None})
 
-
-@app.route("/api/codex/strategies/<int:strategy_id>", methods=["PATCH"])
-def codex_strategy_toggle(strategy_id):
+@app.route("/api/admin/strategies/<int:strategy_id>", methods=["PATCH"])
+def strategy_toggle(strategy_id):
     data = request.json or {}
     if "active" not in data:
         return jsonify({"error": "active required"}), 400
 
-    set_codex_strategy_active(strategy_id, bool(data["active"]))
+    set_strategy_active(strategy_id, bool(data["active"]))
     return jsonify({"ok": True})
-
 
 def main():
     parser = argparse.ArgumentParser(description="Org review admin panel")
@@ -344,7 +318,6 @@ def main():
     print(f"\n  Org Curation:       http://{args.host}:{args.port}")
     print(f"  Export active:      http://{args.host}:{args.port}/export\n")
     app.run(host=args.host, port=args.port, debug=True)
-
 
 if __name__ == "__main__":
     main()

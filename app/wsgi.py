@@ -1,5 +1,5 @@
 """WSGI entrypoint for production servers."""
 
-from seed_orgs.admin import app
+from app.admin import app
 
 __all__ = ["app"]

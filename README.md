@@ -4,7 +4,7 @@ Stateful admin backend for curating London organizations before event extraction
 
 ## Runtime
 
-- App: Flask + SQLAlchemy (`seed_orgs`)
+- App: Flask + SQLAlchemy (`app`)
 - Database: PostgreSQL in production (`DATABASE_URL`), SQLite locally by default
 - Deployment: Render (`render.yaml`)
 
@@ -12,7 +12,7 @@ Stateful admin backend for curating London organizations before event extraction
 
 1. `python3 -m venv .venv && source .venv/bin/activate`
 2. `pip install -r requirements.txt`
-3. `python -m seed_orgs.admin`
+3. `python -m app.admin`
 4. Open `http://127.0.0.1:5000/`
 
 Default local DB file: `orgs.db` (created automatically).
@@ -20,21 +20,21 @@ Default local DB file: `orgs.db` (created automatically).
 ## Environment Variables
 
 - `DATABASE_URL`: required in production
-- `AUTO_SEED_ORGS`: defaults to `true`; seeds from `seed_data.json` when DB is empty
+- `AUTO_BOOTSTRAP_ORGS`: defaults to `true`; seeds from `orgs_bootstrap.json` when DB is empty
 
 ## Deploy (Render)
 
 - Blueprint: `render.yaml`
 - Web service: `london-tasteful-events-admin`
 - Health check: `GET /healthz`
-- Start command: `gunicorn seed_orgs.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
+- Start command: `gunicorn app.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
 
 ## API (Current)
 
-- `GET /api/codex/state`
-- `POST /api/codex/review/<org_id>`
-- `GET|POST /api/codex/strategies`
-- `PATCH /api/codex/strategies/<strategy_id>`
+- `GET /api/admin/state`
+- `POST /api/admin/review/<org_id>`
+- `GET|POST /api/admin/strategies`
+- `PATCH /api/admin/strategies/<strategy_id>`
 - `POST /api/orgs`
 - `POST /api/orgs/bulk`
 - `GET /api/stats`
@@ -42,4 +42,4 @@ Default local DB file: `orgs.db` (created automatically).
 
 ## Collaboration
 
-See [`docs/parallel-collaboration.md`](docs/parallel-collaboration.md) for branch naming and file ownership boundaries to reduce merge conflicts when Codex and Claude work in parallel.
+See [`docs/parallel-collaboration.md`](docs/parallel-collaboration.md) for branch naming and file ownership boundaries to reduce merge conflicts for parallel agent development.
