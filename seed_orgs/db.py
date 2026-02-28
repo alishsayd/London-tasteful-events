@@ -49,6 +49,24 @@ def get_db():
         yield conn
 
 
+def _active_filter_sql() -> str:
+    if IS_POSTGRES:
+        return "active IS TRUE AND (crawl_paused IS FALSE OR crawl_paused IS NULL)"
+    return "coalesce(active, 1) = 1 AND coalesce(crawl_paused, 0) = 0"
+
+
+def _queue_condition_sql() -> str:
+    return """
+    (
+        issue_state = 'open'
+        OR events_url IS NULL
+        OR trim(events_url) = ''
+        OR coalesce(consecutive_failures, 0) >= 3
+        OR coalesce(consecutive_empty_extracts, 0) >= 3
+    )
+    """
+
+
 def init_db() -> None:
     """Create schema and seed initial org data when database is empty."""
     org_id_def = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -72,15 +90,63 @@ def init_db() -> None:
                         CHECK(status IN ('pending', 'approved', 'rejected', 'maybe')),
                     notes TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    reviewed_at TIMESTAMP
+                    reviewed_at TIMESTAMP,
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    crawl_paused BOOLEAN NOT NULL DEFAULT FALSE,
+                    last_crawled_at TIMESTAMP,
+                    last_successful_event_extract_at TIMESTAMP,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    consecutive_empty_extracts INTEGER NOT NULL DEFAULT 0,
+                    issue_state TEXT NOT NULL DEFAULT 'none',
+                    review_needed_reason TEXT
                 )
                 """
             )
         )
+
+        if IS_POSTGRES:
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS crawl_paused BOOLEAN NOT NULL DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS last_crawled_at TIMESTAMP"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS last_successful_event_extract_at TIMESTAMP"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS consecutive_empty_extracts INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS issue_state TEXT NOT NULL DEFAULT 'none'"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS review_needed_reason TEXT"))
+        else:
+            # SQLite path for local/dev only; most environments here are Postgres on Render.
+            for statement in [
+                "ALTER TABLE orgs ADD COLUMN active BOOLEAN NOT NULL DEFAULT 1",
+                "ALTER TABLE orgs ADD COLUMN crawl_paused BOOLEAN NOT NULL DEFAULT 0",
+                "ALTER TABLE orgs ADD COLUMN last_crawled_at TIMESTAMP",
+                "ALTER TABLE orgs ADD COLUMN last_successful_event_extract_at TIMESTAMP",
+                "ALTER TABLE orgs ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE orgs ADD COLUMN consecutive_empty_extracts INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE orgs ADD COLUMN issue_state TEXT NOT NULL DEFAULT 'none'",
+                "ALTER TABLE orgs ADD COLUMN review_needed_reason TEXT",
+            ]:
+                try:
+                    conn.execute(text(statement))
+                except Exception:
+                    pass
+
+        if IS_POSTGRES:
+            conn.execute(text("UPDATE orgs SET active = TRUE WHERE active IS NULL"))
+            conn.execute(text("UPDATE orgs SET crawl_paused = FALSE WHERE crawl_paused IS NULL"))
+        else:
+            conn.execute(text("UPDATE orgs SET active = 1 WHERE active IS NULL"))
+            conn.execute(text("UPDATE orgs SET crawl_paused = 0 WHERE crawl_paused IS NULL"))
+
+        conn.execute(text("UPDATE orgs SET consecutive_failures = 0 WHERE consecutive_failures IS NULL"))
+        conn.execute(text("UPDATE orgs SET consecutive_empty_extracts = 0 WHERE consecutive_empty_extracts IS NULL"))
+        conn.execute(text("UPDATE orgs SET issue_state = 'none' WHERE issue_state IS NULL"))
+
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_status ON orgs(status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_borough ON orgs(borough)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_category ON orgs(category)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_source_domain ON orgs(source_domain)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_active ON orgs(active, crawl_paused)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_issue_state ON orgs(issue_state)"))
 
         conn.execute(
             text(
@@ -298,7 +364,25 @@ def update_org_status(org_id: int, status: str, notes: str | None = None) -> Non
 
 
 def update_org(org_id: int, **fields: Any) -> None:
-    allowed = {"name", "homepage", "events_url", "description", "borough", "category", "notes", "status", "source"}
+    allowed = {
+        "name",
+        "homepage",
+        "events_url",
+        "description",
+        "borough",
+        "category",
+        "notes",
+        "status",
+        "source",
+        "active",
+        "crawl_paused",
+        "last_crawled_at",
+        "last_successful_event_extract_at",
+        "consecutive_failures",
+        "consecutive_empty_extracts",
+        "issue_state",
+        "review_needed_reason",
+    }
     updates = {key: value for key, value in fields.items() if key in allowed}
     if not updates:
         return
@@ -325,10 +409,82 @@ def update_org(org_id: int, **fields: Any) -> None:
 def get_stats() -> dict[str, int]:
     with get_db() as conn:
         rows = conn.execute(text("SELECT status, COUNT(*) AS count FROM orgs GROUP BY status")).mappings().all()
+        active_total = int(conn.execute(text(f"SELECT COUNT(*) FROM orgs WHERE {_active_filter_sql()}")) .scalar_one())
+        queue_total = int(
+            conn.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*) FROM orgs
+                    WHERE {_active_filter_sql()}
+                      AND coalesce(issue_state, 'none') <> 'snoozed'
+                      AND {_queue_condition_sql()}
+                    """
+                )
+            ).scalar_one()
+        )
+        open_issues = int(
+            conn.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*) FROM orgs
+                    WHERE {_active_filter_sql()}
+                      AND coalesce(issue_state, 'none') = 'open'
+                    """
+                )
+            ).scalar_one()
+        )
 
     stats: dict[str, int] = {str(row["status"]): int(row["count"]) for row in rows}
     stats["total"] = sum(stats.values())
+    stats["active_total"] = active_total
+    stats["queue_total"] = queue_total
+    stats["open_issues"] = open_issues
     return stats
+
+
+def get_codex_queue_orgs(limit: int = 250) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT * FROM orgs
+                WHERE {_active_filter_sql()}
+                  AND coalesce(issue_state, 'none') <> 'snoozed'
+                  AND {_queue_condition_sql()}
+                ORDER BY
+                    CASE
+                        WHEN coalesce(issue_state, 'none') = 'open' THEN 0
+                        WHEN events_url IS NULL OR trim(events_url) = '' THEN 1
+                        WHEN coalesce(consecutive_failures, 0) >= 3 THEN 2
+                        WHEN coalesce(consecutive_empty_extracts, 0) >= 3 THEN 3
+                        ELSE 4
+                    END,
+                    coalesce(consecutive_failures, 0) DESC,
+                    coalesce(consecutive_empty_extracts, 0) DESC,
+                    created_at DESC,
+                    id DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": int(limit)},
+        ).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def get_active_orgs(limit: int | None = None) -> list[dict[str, Any]]:
+    query = f"""
+        SELECT * FROM orgs
+        WHERE {_active_filter_sql()}
+        ORDER BY created_at DESC, id DESC
+    """
+    params: dict[str, Any] = {}
+    if limit:
+        query += " LIMIT :limit"
+        params["limit"] = int(limit)
+
+    with get_db() as conn:
+        rows = conn.execute(text(query), params).mappings().all()
+        return [dict(row) for row in rows]
 
 
 def get_codex_strategies() -> list[dict[str, Any]]:

@@ -1,5 +1,3 @@
-const BATCH_SIZE = 20;
-
 const ORG_TYPES = [
   "gallery",
   "museum",
@@ -15,23 +13,19 @@ const ORG_TYPES = [
 const app = document.getElementById("app");
 
 let state = window.CODEX_INITIAL_STATE || {
-  batch_number: 1,
-  batch_size: 0,
-  reviewed_count: 0,
-  pending_total: 0,
-  batch_complete: false,
-  stats: { pending: 0, approved: 0, maybe: 0, rejected: 0, total: 0 },
-  active_batch: [],
+  stats: { pending: 0, approved: 0, maybe: 0, rejected: 0, total: 0, active_total: 0, queue_total: 0, open_issues: 0 },
+  queue_total: 0,
+  queue: [],
+  active_orgs: [],
   strategies: [],
-  approved_preview: [],
 };
 
 const ui = {
   tab: "queue",
-  currentCandidateId: state.active_batch[0]?.id ?? null,
+  currentQueueId: state.queue?.[0]?.id ?? null,
   notice: "",
   isBusy: false,
-  feedbackDrafts: {},
+  queueDrafts: {},
   strategyDraft: "",
   manualDraft: {
     name: "",
@@ -52,22 +46,8 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function statusLabel(status) {
-  if (status === "approved") return "Approved";
-  if (status === "rejected") return "Rejected";
-  if (status === "maybe") return "Parked";
-  return "Pending";
-}
-
-function statusClass(status) {
-  if (status === "approved") return "approved";
-  if (status === "rejected") return "rejected";
-  if (status === "maybe") return "parked";
-  return "pending";
-}
-
 function formatDate(value) {
-  if (!value) return "";
+  if (!value) return "-";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleString();
@@ -77,18 +57,28 @@ function setNotice(message) {
   ui.notice = message;
 }
 
-function syncCurrentCandidate() {
-  const batch = state.active_batch || [];
-  if (!batch.length) {
-    ui.currentCandidateId = null;
+function syncCurrentQueue() {
+  const queue = state.queue || [];
+  if (!queue.length) {
+    ui.currentQueueId = null;
     return;
   }
 
-  const exists = batch.some((item) => item.id === ui.currentCandidateId);
-  if (exists) return;
+  const exists = queue.some((item) => item.id === ui.currentQueueId);
+  if (!exists) {
+    ui.currentQueueId = queue[0].id;
+  }
+}
 
-  const firstPending = batch.find((item) => item.status === "pending");
-  ui.currentCandidateId = firstPending ? firstPending.id : batch[0].id;
+function ensureQueueDraft(org) {
+  if (!org) return { feedback: "", events_url: "" };
+  if (!ui.queueDrafts[org.id]) {
+    ui.queueDrafts[org.id] = {
+      feedback: org.notes || "",
+      events_url: org.events_url || "",
+    };
+  }
+  return ui.queueDrafts[org.id];
 }
 
 async function apiRequest(url, options = {}) {
@@ -109,56 +99,42 @@ async function refreshState() {
   ui.isBusy = true;
   render();
   try {
-    state = await apiRequest(`/api/codex/state?batch_size=${BATCH_SIZE}`);
-    syncCurrentCandidate();
+    state = await apiRequest("/api/codex/state");
+    syncCurrentQueue();
   } finally {
     ui.isBusy = false;
     render();
   }
 }
 
-async function saveReview() {
-  const candidate = (state.active_batch || []).find((item) => item.id === ui.currentCandidateId);
-  if (!candidate) return;
+async function saveQueueAction(action) {
+  const current = (state.queue || []).find((item) => item.id === ui.currentQueueId);
+  if (!current) return;
 
-  const feedback = (ui.feedbackDrafts[candidate.id] || "").trim();
-  if (!feedback) {
-    setNotice("Write a quick freeform note first.");
-    render();
-    return;
-  }
+  const draft = ensureQueueDraft(current);
 
   ui.isBusy = true;
   render();
   try {
-    const payload = await apiRequest(`/api/codex/review/${candidate.id}`, {
+    const payload = await apiRequest(`/api/codex/review/${current.id}`, {
       method: "POST",
-      body: JSON.stringify({ feedback }),
+      body: JSON.stringify({
+        action,
+        feedback: (draft.feedback || "").trim(),
+        events_url: (draft.events_url || "").trim(),
+      }),
     });
 
     state = payload.state;
-    const nextPending = (state.active_batch || []).find((item) => item.status === "pending");
-    if (nextPending) ui.currentCandidateId = nextPending.id;
-    setNotice(`Saved as ${statusLabel(payload.status).toLowerCase()}.`);
-  } catch (error) {
-    setNotice(error.message);
-  } finally {
-    ui.isBusy = false;
-    render();
-  }
-}
+    syncCurrentQueue();
 
-async function loadNextBatch() {
-  ui.isBusy = true;
-  render();
-  try {
-    const payload = await apiRequest("/api/codex/next-batch", {
-      method: "POST",
-      body: JSON.stringify({ batch_size: BATCH_SIZE }),
-    });
-    state = payload.state;
-    ui.currentCandidateId = state.active_batch[0]?.id ?? null;
-    setNotice(`Loaded batch #${state.batch_number}.`);
+    if (action === "resolve") {
+      setNotice("Issue marked resolved.");
+    } else if (action === "snooze") {
+      setNotice("Issue snoozed.");
+    } else {
+      setNotice("Issue kept open.");
+    }
   } catch (error) {
     setNotice(error.message);
   } finally {
@@ -202,7 +178,7 @@ async function addManualOrg(form) {
     };
 
     await refreshState();
-    setNotice(`Added \"${body.name}\".`);
+    setNotice(`Added "${body.name}".`);
   } catch (error) {
     setNotice(error.message);
   } finally {
@@ -254,57 +230,61 @@ async function toggleStrategy(strategyId, active) {
 }
 
 function renderQueue() {
-  const batch = state.active_batch || [];
-  const reviewedCount = state.reviewed_count || 0;
-  const current = batch.find((item) => item.id === ui.currentCandidateId) || null;
+  const queue = state.queue || [];
+  const current = queue.find((item) => item.id === ui.currentQueueId) || null;
 
-  const chips = batch
-    .map((item, index) => {
-      const active = item.id === ui.currentCandidateId;
-      const reviewed = item.status !== "pending";
-      const badge = reviewed ? statusLabel(item.status).charAt(0) : "•";
+  const list = queue
+    .map((item) => {
+      const active = item.id === ui.currentQueueId;
       return `
-      <button class="batch-chip ${active ? "active" : ""} ${reviewed ? "done" : ""}" data-action="pick-candidate" data-id="${item.id}">
-        ${index + 1}<span>${badge}</span>
+      <button class="queue-item ${active ? "active" : ""}" data-action="pick-queue" data-id="${item.id}">
+        <div class="queue-item-head">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>#${escapeHtml(item.id)}</span>
+        </div>
+        <p class="queue-reason">${escapeHtml(item.queue_reason || "Needs review")}</p>
       </button>`;
     })
     .join("");
 
-  let card = '<div class="empty-card">No candidate available in this batch.</div>';
-  if (current) {
-    const currentIndex = batch.findIndex((item) => item.id === current.id);
-    const feedback = ui.feedbackDrafts[current.id] ?? current.notes ?? "";
+  let card = '<div class="empty-card">No orgs currently need manual review.</div>';
 
+  if (current) {
+    const draft = ensureQueueDraft(current);
     card = `
       <article class="candidate-card">
         <div class="candidate-head">
           <div>
-            <p class="candidate-index">Candidate ${currentIndex + 1} of ${batch.length}</p>
+            <p class="candidate-index">Issue queue item</p>
             <h3>${escapeHtml(current.name)}</h3>
           </div>
-          <span class="status ${statusClass(current.status)}">${statusLabel(current.status)}</span>
+          <span class="status pending">${escapeHtml(current.issue_state || "open")}</span>
         </div>
 
         <div class="meta-grid">
+          <div><label>Reason</label><p>${escapeHtml(current.queue_reason || "-")}</p></div>
           <div><label>Borough</label><p>${escapeHtml(current.borough || "-")}</p></div>
-          <div><label>Category</label><p>${escapeHtml(current.category || "-")}</p></div>
-          <div><label>Source</label><p>${escapeHtml(current.source || "-")}</p></div>
-          <div><label>Reviewed</label><p>${escapeHtml(formatDate(current.reviewed_at) || "Not yet")}</p></div>
+          <div><label>Type</label><p>${escapeHtml(current.category || "-")}</p></div>
+          <div><label>Last crawled</label><p>${escapeHtml(formatDate(current.last_crawled_at))}</p></div>
+          <div><label>Last successful extract</label><p>${escapeHtml(formatDate(current.last_successful_event_extract_at))}</p></div>
+          <div><label>Failure/empty streak</label><p>${escapeHtml(current.consecutive_failures || 0)} / ${escapeHtml(current.consecutive_empty_extracts || 0)}</p></div>
         </div>
-
-        <p class="candidate-note">${escapeHtml(current.description || "No description yet.")}</p>
 
         <div class="links">
           ${current.homepage ? `<a href="${escapeHtml(current.homepage)}" target="_blank" rel="noreferrer">Open website</a>` : ""}
           ${current.events_url ? `<a href="${escapeHtml(current.events_url)}" target="_blank" rel="noreferrer">Open events page</a>` : ""}
         </div>
 
-        <label class="feedback-label" for="feedback-input">Your freeform feedback</label>
-        <textarea id="feedback-input" data-action="feedback-input" placeholder="Approve/reject/park in plain text; include corrections when needed.">${escapeHtml(feedback)}</textarea>
+        <label class="feedback-label" for="queue-events-url">Events URL fix (optional)</label>
+        <input id="queue-events-url" data-action="queue-events-url-input" data-id="${current.id}" value="${escapeHtml(draft.events_url)}" placeholder="https://.../events" />
+
+        <label class="feedback-label" for="queue-feedback">Admin note</label>
+        <textarea id="queue-feedback" data-action="queue-feedback-input" data-id="${current.id}" placeholder="What did you change or decide?">${escapeHtml(draft.feedback)}</textarea>
 
         <div class="card-actions">
-          <button class="primary-btn" data-action="save-review" ${ui.isBusy ? "disabled" : ""}>Interpret and save note</button>
-          <button class="ghost-btn" data-action="next-candidate" ${currentIndex >= batch.length - 1 ? "disabled" : ""}>Next candidate</button>
+          <button class="primary-btn" data-action="queue-save" data-mode="resolve" ${ui.isBusy ? "disabled" : ""}>Mark resolved</button>
+          <button class="ghost-btn" data-action="queue-save" data-mode="snooze" ${ui.isBusy ? "disabled" : ""}>Snooze</button>
+          <button class="ghost-btn" data-action="queue-save" data-mode="open" ${ui.isBusy ? "disabled" : ""}>Keep open</button>
         </div>
       </article>
     `;
@@ -313,37 +293,36 @@ function renderQueue() {
   return `
     <section class="panel">
       <header class="panel-head">
-        <h2>Batch Review (Max 20)</h2>
-        <p>No new orgs appear until every org in this batch is reviewed.</p>
+        <h2>Review Queue</h2>
+        <p>Traditional rolling queue. Only orgs with active crawl/event-source issues appear here.</p>
       </header>
 
-      <div class="progress">
-        <div class="progress-bar" style="width: ${batch.length ? (reviewedCount / batch.length) * 100 : 0}%"></div>
+      <div class="queue-layout">
+        <div class="queue-list">
+          ${list || '<div class="empty-card">Queue is empty.</div>'}
+        </div>
+        <div class="queue-card">${card}</div>
       </div>
-
-      <div class="batch-strip">${chips}</div>
-      ${card}
-
-      <footer class="batch-footer">
-        <button class="primary-btn" data-action="load-next-batch" ${state.batch_complete && !ui.isBusy ? "" : "disabled"}>Load next batch</button>
-        <p>${state.batch_complete ? "Batch complete. Next batch will apply your feedback signals." : `Finish all ${batch.length} reviews to unlock the next batch.`}</p>
-      </footer>
     </section>
   `;
 }
 
-function renderAdd() {
-  const approved = state.approved_preview || [];
-  const items = approved
+function renderActive() {
+  const rows = (state.active_orgs || [])
     .map(
       (item) => `
-      <div class="approved-item">
-        <div>
-          <strong>${escapeHtml(item.name)}</strong>
-          <p>${escapeHtml(item.borough || "-")} - ${escapeHtml(item.category || "-")}</p>
-        </div>
-        ${item.events_url ? `<a href="${escapeHtml(item.events_url)}" target="_blank" rel="noreferrer">Events page</a>` : ""}
-      </div>
+      <tr>
+        <td>${escapeHtml(item.name)}</td>
+        <td>${escapeHtml(item.borough || "-")}</td>
+        <td>${escapeHtml(item.category || "-")}</td>
+        <td>${item.events_url ? `<a href="${escapeHtml(item.events_url)}" target="_blank" rel="noreferrer">Link</a>` : "-"}</td>
+        <td>${escapeHtml(formatDate(item.created_at))}</td>
+        <td>${escapeHtml(formatDate(item.last_crawled_at))}</td>
+        <td>${escapeHtml(formatDate(item.last_successful_event_extract_at))}</td>
+        <td>${escapeHtml(item.consecutive_failures || 0)}</td>
+        <td>${escapeHtml(item.consecutive_empty_extracts || 0)}</td>
+        <td>${item.is_new ? "New" : ""}</td>
+      </tr>
     `
     )
     .join("");
@@ -351,8 +330,41 @@ function renderAdd() {
   return `
     <section class="panel">
       <header class="panel-head">
+        <h2>All Active Orgs</h2>
+        <p>Flat table extract.</p>
+      </header>
+
+      <div class="table-wrap">
+        <table class="flat-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Borough</th>
+              <th>Type</th>
+              <th>Events URL</th>
+              <th>Created At</th>
+              <th>Last Crawled</th>
+              <th>Last Success</th>
+              <th>Failures</th>
+              <th>Empty</th>
+              <th>New</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="10">No active orgs.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderAdd() {
+  return `
+    <section class="panel">
+      <header class="panel-head">
         <h2>Add Specific Organization</h2>
-        <p>Manual additions are saved in the shared database.</p>
+        <p>Manual additions go straight into the main org database.</p>
       </header>
 
       <form class="stack-form" data-action="manual-submit">
@@ -376,13 +388,8 @@ function renderAdd() {
         <label>Description
           <textarea name="description" placeholder="Why this source matters.">${escapeHtml(ui.manualDraft.description)}</textarea>
         </label>
-        <button class="primary-btn" type="submit" ${ui.isBusy ? "disabled" : ""}>Add approved org</button>
+        <button class="primary-btn" type="submit" ${ui.isBusy ? "disabled" : ""}>Add org</button>
       </form>
-
-      <section class="approved-list">
-        <h3>Approved orgs (${state.stats?.approved || 0})</h3>
-        ${items || '<p class="empty-small">No approved orgs yet.</p>'}
-      </section>
     </section>
   `;
 }
@@ -409,11 +416,11 @@ function renderStrategies() {
     <section class="panel">
       <header class="panel-head">
         <h2>Search Strategy Log</h2>
-        <p>Strategy notes are persisted and used for next-batch ranking.</p>
+        <p>Freeform strategy notes that guide future org discovery.</p>
       </header>
 
       <label class="feedback-label" for="strategy-input">New strategy note</label>
-      <textarea id="strategy-input" data-action="strategy-input" placeholder="Example: Focus on Hackney/Islington bookshops; avoid chain venues.">${escapeHtml(ui.strategyDraft)}</textarea>
+      <textarea id="strategy-input" data-action="strategy-input" placeholder="Example: prioritize non-commercial art spaces in East London.">${escapeHtml(ui.strategyDraft)}</textarea>
       <button class="primary-btn" data-action="save-strategy" ${ui.isBusy ? "disabled" : ""}>Save strategy note</button>
 
       <section class="strategy-list">
@@ -425,14 +432,19 @@ function renderStrategies() {
 }
 
 function render() {
-  syncCurrentCandidate();
+  syncCurrentQueue();
 
   const body =
     ui.tab === "queue"
       ? renderQueue()
-      : ui.tab === "add"
-        ? renderAdd()
-        : renderStrategies();
+      : ui.tab === "active"
+        ? renderActive()
+        : ui.tab === "add"
+          ? renderAdd()
+          : renderStrategies();
+
+  const queueTotal = state.queue_total || state.queue?.length || 0;
+  const activeTotal = state.stats?.active_total || state.active_orgs?.length || 0;
 
   app.innerHTML = `
     <div class="curation-shell">
@@ -441,21 +453,22 @@ function render() {
           <div>
             <p class="eyebrow">Codex Workstream</p>
             <h1>Org Curation Console</h1>
-            <p class="sub">Persistent backend mode (Postgres-ready) for shared curation.</p>
+            <p class="sub">Rolling issue queue + flat active-org extract.</p>
           </div>
           <button class="ghost-btn" data-action="refresh" ${ui.isBusy ? "disabled" : ""}>Refresh</button>
         </div>
 
         <div class="metrics">
-          <div class="metric"><span>Batch</span><strong>#${escapeHtml(state.batch_number || 1)}</strong></div>
-          <div class="metric"><span>Reviewed</span><strong>${escapeHtml(state.reviewed_count || 0)}/${escapeHtml(state.batch_size || 0)}</strong></div>
-          <div class="metric"><span>Approved</span><strong>${escapeHtml(state.stats?.approved || 0)}</strong></div>
-          <div class="metric"><span>Pending</span><strong>${escapeHtml(state.pending_total || 0)}</strong></div>
+          <div class="metric"><span>Queue</span><strong>${escapeHtml(queueTotal)}</strong></div>
+          <div class="metric"><span>Active Orgs</span><strong>${escapeHtml(activeTotal)}</strong></div>
+          <div class="metric"><span>Open Issues</span><strong>${escapeHtml(state.stats?.open_issues || 0)}</strong></div>
+          <div class="metric"><span>Total</span><strong>${escapeHtml(state.stats?.total || 0)}</strong></div>
         </div>
       </header>
 
       <nav class="tab-nav">
         <button class="tab ${ui.tab === "queue" ? "active" : ""}" data-action="switch-tab" data-tab="queue">Review Queue</button>
+        <button class="tab ${ui.tab === "active" ? "active" : ""}" data-action="switch-tab" data-tab="active">All Active Orgs</button>
         <button class="tab ${ui.tab === "add" ? "active" : ""}" data-action="switch-tab" data-tab="add">Add Org</button>
         <button class="tab ${ui.tab === "strategy" ? "active" : ""}" data-action="switch-tab" data-tab="strategy">Strategies</button>
       </nav>
@@ -483,28 +496,14 @@ app.addEventListener("click", async (event) => {
     return;
   }
 
-  if (action === "pick-candidate") {
-    ui.currentCandidateId = Number(target.dataset.id);
+  if (action === "pick-queue") {
+    ui.currentQueueId = Number(target.dataset.id);
     render();
     return;
   }
 
-  if (action === "next-candidate") {
-    const batch = state.active_batch || [];
-    const index = batch.findIndex((item) => item.id === ui.currentCandidateId);
-    const next = batch[index + 1];
-    if (next) ui.currentCandidateId = next.id;
-    render();
-    return;
-  }
-
-  if (action === "save-review") {
-    await saveReview();
-    return;
-  }
-
-  if (action === "load-next-batch") {
-    await loadNextBatch();
+  if (action === "queue-save") {
+    await saveQueueAction(target.dataset.mode || "resolve");
     return;
   }
 
@@ -522,8 +521,21 @@ app.addEventListener("input", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
 
-  if (target.id === "feedback-input" && ui.currentCandidateId) {
-    ui.feedbackDrafts[ui.currentCandidateId] = target.value;
+  if (target.dataset.action === "queue-feedback-input") {
+    const id = Number(target.dataset.id);
+    if (!id) return;
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "" };
+    draft.feedback = target.value;
+    ui.queueDrafts[id] = draft;
+    return;
+  }
+
+  if (target.dataset.action === "queue-events-url-input") {
+    const id = Number(target.dataset.id);
+    if (!id) return;
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "" };
+    draft.events_url = target.value;
+    ui.queueDrafts[id] = draft;
     return;
   }
 
