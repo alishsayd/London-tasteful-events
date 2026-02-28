@@ -916,28 +916,34 @@ def finish_discovery_run(
     details_json = json.dumps(details, ensure_ascii=False) if details is not None else None
     error_value = (error or "").strip()[:4000] or None
 
+    set_clauses = [
+        "status = :status",
+        "result_count = :result_count",
+        "upserted_count = :upserted_count",
+        "error = :error",
+        "finished_at = CURRENT_TIMESTAMP",
+    ]
+    params = {
+        "run_id": int(run_id),
+        "status": status_value,
+        "result_count": int(result_count),
+        "upserted_count": int(upserted_count),
+        "error": error_value,
+    }
+    if details_json is not None:
+        set_clauses.insert(4, "details_json = :details_json")
+        params["details_json"] = details_json
+
     with get_db() as conn:
         conn.execute(
             text(
-                """
+                f"""
                 UPDATE discovery_runs
-                SET status = :status,
-                    result_count = :result_count,
-                    upserted_count = :upserted_count,
-                    error = :error,
-                    details_json = CASE WHEN :details_json IS NULL THEN details_json ELSE :details_json END,
-                    finished_at = CURRENT_TIMESTAMP
+                SET {", ".join(set_clauses)}
                 WHERE id = :run_id
                 """
             ),
-            {
-                "run_id": int(run_id),
-                "status": status_value,
-                "result_count": int(result_count),
-                "upserted_count": int(upserted_count),
-                "error": error_value,
-                "details_json": details_json,
-            },
+            params,
         )
 
 

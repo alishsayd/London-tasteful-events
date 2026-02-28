@@ -152,11 +152,87 @@ CATEGORY_MAP = {
     "social community center": ["community", "social", "charity", "collective"],
 }
 
+ARTICLE_PATH_HINTS = (
+    "/article",
+    "/articles",
+    "/blog",
+    "/blogs",
+    "/news",
+    "/story",
+    "/stories",
+    "/guide",
+    "/guides",
+    "/feature",
+    "/features",
+    "/opinion",
+    "/review",
+    "/reviews",
+    "/category/",
+    "/tag/",
+)
+
+ARTICLE_TITLE_HINTS = (
+    "the best ",
+    "top ",
+    "things to do",
+    "roundup",
+    "guide to",
+    "list of",
+    "best of",
+)
+
+PROGRAM_HINTS = (
+    "friday lates",
+    "late-night",
+    "late night",
+    "open day",
+    "special event",
+    "one-off",
+    "one off",
+)
+
+PROGRAM_PATH_HINTS = (
+    "/event/",
+    "/events/",
+    "/whatson/",
+    "/whats-on/",
+    "/programme/",
+    "/program/",
+    "/calendar/",
+)
+
+ORG_SCHEMA_TYPES = {
+    "organization",
+    "localbusiness",
+    "performinggroup",
+    "artgallery",
+    "museum",
+    "movietheater",
+    "eventvenue",
+    "civicstructure",
+    "touristattraction",
+    "library",
+    "placeofworship",
+    "educationalorganization",
+    "collegeoruniversity",
+    "highschool",
+    "school",
+    "charity",
+    "nonprofit",
+}
+
 
 def _clean_text(value: str | None) -> str:
     text_value = str(value or "")
     text_value = re.sub(r"\s+", " ", text_value)
     return text_value.strip()
+
+
+def _normalize_token(value: str | None) -> str:
+    cleaned = _clean_text(value).lower()
+    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 
 def _domain(url: str | None) -> str:
@@ -178,6 +254,153 @@ def _normalize_homepage(url: str) -> str:
 def _looks_like_html_response(response: requests.Response) -> bool:
     content_type = str(response.headers.get("content-type") or "").lower()
     return "text/html" in content_type or "application/xhtml+xml" in content_type
+
+
+def _domain_root_label(url: str | None) -> str:
+    domain = _domain(url)
+    if not domain:
+        return ""
+    return _clean_text(domain.split(".")[0])
+
+
+def _name_matches_domain(name: str, url: str) -> bool:
+    domain_label = _normalize_token(_domain_root_label(url))
+    if len(domain_label) < 3:
+        return False
+
+    normalized_name = _normalize_token(name)
+    compact_name = normalized_name.replace(" ", "")
+    if domain_label in normalized_name or normalized_name in domain_label:
+        return True
+    if 2 <= len(compact_name) <= 4 and compact_name in domain_label:
+        return True
+    return False
+
+
+def _word_count(value: str | None) -> int:
+    return len([part for part in _normalize_token(value).split(" ") if part])
+
+
+def _looks_like_article_title(value: str | None) -> bool:
+    lower = _normalize_token(value)
+    if not lower:
+        return False
+    return any(hint in lower for hint in ARTICLE_TITLE_HINTS)
+
+
+def _looks_like_program_text(value: str | None) -> bool:
+    lower = _normalize_token(value)
+    if not lower:
+        return False
+    if any(hint in lower for hint in PROGRAM_HINTS):
+        return True
+
+    tokens = lower.split(" ")
+    return (
+        ("friday" in tokens and "lates" in tokens)
+        or ("late" in tokens and "night" in tokens)
+        or ("open" in tokens and "day" in tokens)
+    )
+
+
+def _looks_like_article_or_listicle(url: str, title: str, description: str, page_text: str) -> bool:
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    if any(hint in path for hint in ARTICLE_PATH_HINTS):
+        return True
+
+    if _looks_like_article_title(title):
+        return True
+
+    lower_blob = _normalize_token(" ".join([title, description, page_text[:1200]]))
+    article_signals = (
+        "read more",
+        "published",
+        "share this article",
+        "newsletter",
+    )
+    score = 0
+    if "author" in lower_blob:
+        score += 1
+    for signal in article_signals:
+        if signal in lower_blob:
+            score += 1
+    return score >= 2
+
+
+def _looks_like_program_page(url: str, title: str, name: str) -> bool:
+    path = (urlparse(url).path or "").lower()
+    if any(hint in path for hint in PROGRAM_PATH_HINTS):
+        if _looks_like_program_text(title) or _looks_like_program_text(name):
+            return True
+    return _looks_like_program_text(title) and _word_count(name) >= 2
+
+
+def _schema_payload_has_org_type(payload: Any) -> bool:
+    if isinstance(payload, list):
+        return any(_schema_payload_has_org_type(item) for item in payload)
+
+    if not isinstance(payload, dict):
+        return False
+
+    item_type = payload.get("@type")
+    if isinstance(item_type, str):
+        if _normalize_token(item_type).replace(" ", "") in ORG_SCHEMA_TYPES:
+            return True
+    elif isinstance(item_type, list):
+        for value in item_type:
+            if isinstance(value, str) and _normalize_token(value).replace(" ", "") in ORG_SCHEMA_TYPES:
+                return True
+
+    for key in ("@graph", "mainEntity", "itemListElement", "about", "publisher"):
+        if key in payload and _schema_payload_has_org_type(payload[key]):
+            return True
+
+    return False
+
+
+def _has_org_schema_markup(soup: BeautifulSoup) -> bool:
+    for script in soup.select("script[type='application/ld+json']"):
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if _schema_payload_has_org_type(payload):
+            return True
+    return False
+
+
+def _site_name_from_meta(soup: BeautifulSoup) -> str | None:
+    tag = soup.find("meta", attrs={"property": "og:site_name"})
+    if not tag:
+        return None
+    value = _clean_text(tag.get("content"))
+    return value or None
+
+
+def _is_valid_org_name(name: str) -> bool:
+    cleaned = _clean_text(name)
+    if len(cleaned) < 3 or len(cleaned) > 90:
+        return False
+
+    if _word_count(cleaned) > 7:
+        return False
+
+    lower = _normalize_token(cleaned)
+    if not lower:
+        return False
+
+    if _looks_like_article_title(lower):
+        return False
+
+    if _looks_like_program_text(lower) and _word_count(cleaned) > 2:
+        return False
+
+    blocked_exact = {"home", "events", "what s on", "whats on", "calendar", "program", "programme"}
+    return lower not in blocked_exact
 
 
 def _unwrap_duckduckgo_href(href: str) -> str | None:
@@ -263,27 +486,41 @@ def _extract_title_and_description(soup: BeautifulSoup) -> tuple[str, str]:
 
 
 def _extract_name(page_url: str, soup: BeautifulSoup, title: str) -> str | None:
-    og_site = soup.find("meta", attrs={"property": "og:site_name"})
-    if og_site and _clean_text(og_site.get("content")):
-        candidate = _clean_text(og_site.get("content"))
-        if len(candidate) >= 3:
-            return candidate
+    site_name = _site_name_from_meta(soup)
+    if site_name and _is_valid_org_name(site_name):
+        return site_name
 
     if title:
+        split_parts: list[str] = []
         for sep in ("|", " - ", "—", "·"):
             if sep in title:
-                candidate = _clean_text(title.split(sep)[0])
-                if len(candidate) >= 3 and candidate.lower() not in {"home", "events", "what's on", "what’s on"}:
-                    return candidate
+                split_parts = [_clean_text(part) for part in title.split(sep) if _clean_text(part)]
+                break
 
-        if len(title) >= 3 and len(title) <= 90:
+        if split_parts:
+            if site_name:
+                for part in split_parts:
+                    if _normalize_token(part) == _normalize_token(site_name) and _is_valid_org_name(part):
+                        return part
+
+            if len(split_parts) >= 2:
+                left = split_parts[0]
+                right = split_parts[-1]
+                if (_looks_like_program_text(left) or _looks_like_article_title(left)) and _is_valid_org_name(right):
+                    return right
+
+            for part in split_parts:
+                if _is_valid_org_name(part) and not _looks_like_program_text(part):
+                    return part
+
+        if _is_valid_org_name(title) and not _looks_like_article_title(title):
             return title
 
     host = _domain(page_url)
     if host:
         base = host.split(".")[0].replace("-", " ").strip()
         base = _clean_text(base.title())
-        if len(base) >= 3:
+        if _is_valid_org_name(base):
             return base
 
     return None
@@ -383,14 +620,26 @@ def _extract_org_candidate(url: str, timeout: int) -> dict[str, Any] | None:
     if not _is_london_related(text_blob):
         return None
 
-    name = _extract_name(url, soup, title)
+    name = _extract_name(response.url, soup, title)
     if not name:
+        return None
+    if not _is_valid_org_name(name):
         return None
 
     homepage = _normalize_homepage(response.url)
     events_url = _extract_events_url(response.url, soup)
     borough = _infer_borough(text_blob)
     category = _infer_category(text_blob)
+
+    article_like = _looks_like_article_or_listicle(response.url, title, description, page_text)
+    program_like = _looks_like_program_page(response.url, title, name)
+    domain_match = _name_matches_domain(name, response.url)
+    has_schema = _has_org_schema_markup(soup)
+
+    if article_like and not domain_match and not has_schema:
+        return None
+    if program_like and not domain_match and not has_schema:
+        return None
 
     if not description:
         if page_text:
