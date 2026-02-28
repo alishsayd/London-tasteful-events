@@ -146,6 +146,9 @@ def _issue_priority(value: str | None) -> int:
     return lookup.get(str(value or "none"), 3)
 
 
+_INIT_DONE = False
+
+
 @contextmanager
 def get_db():
     with ENGINE.begin() as conn:
@@ -334,6 +337,10 @@ def _dedupe_and_enrich() -> None:
 
 def init_db() -> None:
     """Create schema and seed initial org data when database is empty."""
+    global _INIT_DONE
+    if _INIT_DONE:
+        return
+
     org_id_def = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     strategy_id_def = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
 
@@ -443,6 +450,7 @@ def init_db() -> None:
 
     _bootstrap_if_empty()
     _dedupe_and_enrich()
+    _INIT_DONE = True
 
 
 def _resolve_bootstrap_file() -> Path | None:
