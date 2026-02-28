@@ -551,19 +551,25 @@ def upsert_org(
     norm_name = _normalize_name(name)
 
     with get_db() as conn:
-        candidates = conn.execute(
-            text(
-                """
-                SELECT * FROM orgs
-                WHERE lower(name) = lower(:name)
-                   OR coalesce(homepage, '') = coalesce(:homepage, '')
-                   OR coalesce(events_url, '') = coalesce(:events_url, '')
-                   OR (:source_domain IS NOT NULL AND source_domain = :source_domain)
-                ORDER BY id ASC
-                """
-            ),
-            {"name": name, "homepage": homepage, "events_url": events_url, "source_domain": source_domain},
-        ).mappings().all()
+        # PostgreSQL (psycopg3) can reject ":param IS NOT NULL" checks as ambiguous
+        # when the same bind is also used in equality predicates. Build this predicate
+        # dynamically to avoid typing ambiguity and keep SQLite behavior identical.
+        where_clauses = [
+            "lower(name) = lower(:name)",
+            "coalesce(homepage, '') = coalesce(:homepage, '')",
+            "coalesce(events_url, '') = coalesce(:events_url, '')",
+        ]
+        params = {"name": name, "homepage": homepage, "events_url": events_url}
+        if source_domain is not None:
+            where_clauses.append("source_domain = :source_domain")
+            params["source_domain"] = source_domain
+
+        query = f"""
+            SELECT * FROM orgs
+            WHERE {' OR '.join(where_clauses)}
+            ORDER BY id ASC
+        """
+        candidates = conn.execute(text(query), params).mappings().all()
 
         existing = None
         for row in candidates:

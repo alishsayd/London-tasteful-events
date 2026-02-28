@@ -166,9 +166,9 @@ def add_org():
             update_org(org_id, issue_state="none", review_needed_reason=None, active=True, crawl_paused=False)
 
         return jsonify({"ok": True, "id": org_id})
-    except Exception as exc:
+    except Exception:
         app.logger.exception("Failed to add org via /api/orgs")
-        return jsonify({"error": "Failed to add org", "details": str(exc), "type": exc.__class__.__name__}), 500
+        return jsonify({"error": "Failed to add org"}), 500
 
 
 @app.route("/api/orgs/bulk", methods=["POST"])
