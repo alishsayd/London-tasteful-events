@@ -69,6 +69,56 @@ def _normalize_name(value: str | None) -> str:
     return lowered
 
 
+NAME_STOPWORDS = {
+    "the",
+    "london",
+    "uk",
+    "centre",
+    "center",
+    "cultural",
+    "institute",
+    "foundation",
+    "house",
+}
+
+
+def _name_tokens(normalized_name: str | None) -> list[str]:
+    tokens = [token for token in str(normalized_name or "").split(" ") if token]
+    return [token for token in tokens if token not in NAME_STOPWORDS]
+
+
+def _name_signature(normalized_name: str | None) -> str:
+    tokens = _name_tokens(normalized_name)
+    if not tokens:
+        return ""
+    return " ".join(tokens[:3])
+
+
+def _names_likely_same_entity(left: str | None, right: str | None) -> bool:
+    left_norm = _normalize_name(left)
+    right_norm = _normalize_name(right)
+    if not left_norm or not right_norm:
+        return False
+    if left_norm == right_norm:
+        return True
+    if len(left_norm) >= 6 and left_norm in right_norm:
+        return True
+    if len(right_norm) >= 6 and right_norm in left_norm:
+        return True
+
+    left_tokens = set(_name_tokens(left_norm))
+    right_tokens = set(_name_tokens(right_norm))
+    if not left_tokens or not right_tokens:
+        return False
+
+    intersection = left_tokens & right_tokens
+    if len(intersection) >= 2:
+        overlap = len(intersection) / min(len(left_tokens), len(right_tokens))
+        if overlap >= 0.75:
+            return True
+    return False
+
+
 def _active_filter_sql() -> str:
     if IS_POSTGRES:
         return "active IS TRUE AND (crawl_paused IS FALSE OR crawl_paused IS NULL)"
@@ -144,6 +194,80 @@ def _best_description(current: str | None, candidate: str | None, row_fallback: 
 def _issue_priority(value: str | None) -> int:
     lookup = {"open": 4, "none": 3, "snoozed": 2, "resolved": 1}
     return lookup.get(str(value or "none"), 3)
+
+
+CLEANUP_BLOCKED_DOMAIN_SUFFIXES = (
+    "ianvisits.co.uk",
+    "lectures.london",
+    "github.com",
+    "bsky.app",
+    "bsky.social",
+    "blueskyweb.xyz",
+    "theguardian.com",
+    "guardian.co.uk",
+    "ft.com",
+    "eventindustrynews.com",
+    "culturecalling.com",
+    "london.com",
+)
+
+CLEANUP_BAD_NAME_PHRASES = (
+    "book your tickets",
+    "courses and meetings",
+    "support ianvisits",
+    "subscribe to read",
+    "events listings",
+    "arts events listings",
+    "overview",
+)
+
+
+def _domain_matches_suffix(value: str | None, suffixes: tuple[str, ...]) -> bool:
+    host = str(value or "").strip().lower().replace("www.", "")
+    if not host:
+        return False
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def _discovery_cleanup_reasons(row: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    name_value = str(row.get("name") or "").strip()
+    name_key = _normalize_name(name_value)
+    homepage = str(row.get("homepage") or "").strip()
+    events_url = str(row.get("events_url") or "").strip()
+    domain = (
+        str(row.get("source_domain") or "").strip().lower()
+        or str(_domain_from_url(homepage) or "").strip().lower()
+        or str(_domain_from_url(events_url) or "").strip().lower()
+    )
+
+    if _domain_matches_suffix(domain, CLEANUP_BLOCKED_DOMAIN_SUFFIXES):
+        reasons.append("non-entity source domain")
+
+    if not name_key:
+        reasons.append("missing org name")
+    else:
+        if any(phrase in name_key for phrase in CLEANUP_BAD_NAME_PHRASES):
+            reasons.append("navigation/paywall or non-entity title")
+        if name_key in {"github", "bluesky", "bluesky social", "guardian", "the guardian"}:
+            reasons.append("platform/publisher title")
+        if name_key.startswith(("book ", "support ", "subscribe ")):
+            reasons.append("cta title")
+
+    bad_path_hints = ("/article", "/news", "/blog", "/reviews", "/review", "/opinion", "/calendar/", "/event/")
+    lower_home = homepage.lower()
+    lower_events = events_url.lower()
+    if any(hint in lower_home for hint in bad_path_hints) and "whatson" not in lower_home and "whats-on" not in lower_home:
+        reasons.append("article/program homepage")
+    if any(hint in lower_events for hint in bad_path_hints) and "whatson" not in lower_events and "whats-on" not in lower_events:
+        reasons.append("article/program events url")
+
+    # Keep only unique reasons while preserving insertion order.
+    unique: list[str] = []
+    for reason in reasons:
+        if reason not in unique:
+            unique.append(reason)
+    return unique
 
 
 @contextmanager
@@ -302,6 +426,7 @@ def _dedupe_and_enrich() -> None:
         for row in rows:
             row_id = int(row["id"])
             name_key = _normalize_name(row.get("name"))
+            signature = _name_signature(name_key)
             domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url"))
             homepage_key = _canonical_url(row.get("homepage"))
             events_key = _canonical_url(row.get("events_url"))
@@ -309,6 +434,8 @@ def _dedupe_and_enrich() -> None:
             keys: list[tuple] = []
             if domain and name_key:
                 keys.append(("domain_name", domain, name_key))
+            if domain and signature:
+                keys.append(("domain_signature", domain, signature))
             if homepage_key:
                 keys.append(("homepage", homepage_key))
             if events_key:
@@ -575,7 +702,8 @@ def upsert_org(
         for row in candidates:
             row_name = _normalize_name(row.get("name"))
             row_domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url"))
-            if row_name and norm_name and row_name == norm_name:
+            name_matches = bool(row_name and norm_name and _names_likely_same_entity(row_name, norm_name))
+            if name_matches:
                 if row_domain and source_domain and row_domain == source_domain:
                     existing = dict(row)
                     break
@@ -786,6 +914,78 @@ def get_active_orgs(limit: int | None = None) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(text(query), params).mappings().all()
         return [dict(row) for row in rows]
+
+
+def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit: int = 1000) -> dict[str, Any]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+
+    with get_db() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT * FROM orgs
+                WHERE source = 'auto_discovery'
+                ORDER BY created_at DESC, id DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": int(limit)},
+        ).mappings().all()
+
+    scoped_rows: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        created_at = _as_datetime(row.get("created_at"))
+        if created_at and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if created_at and created_at < cutoff:
+            continue
+        scoped_rows.append(row)
+
+    flagged: list[dict[str, Any]] = []
+    for row in scoped_rows:
+        reasons = _discovery_cleanup_reasons(row)
+        if not reasons:
+            continue
+        flagged.append(
+            {
+                "id": int(row["id"]),
+                "name": row.get("name"),
+                "source_domain": row.get("source_domain"),
+                "reasons": reasons,
+            }
+        )
+
+    updated = 0
+    if not dry_run:
+        for item in flagged:
+            org = get_org(int(item["id"])) or {}
+            reason_text = "; ".join(item["reasons"][:3])
+            note = str(org.get("notes") or "").strip()
+            cleanup_note = f"Auto-cleanup: {reason_text}"
+            merged_note = cleanup_note if not note else f"{note}\n{cleanup_note}"
+            update_org(
+                int(item["id"]),
+                status="rejected",
+                active=False,
+                crawl_paused=True,
+                issue_state="resolved",
+                review_needed_reason=f"Auto-cleanup: {reason_text}",
+                notes=merged_note[:2000],
+            )
+            updated += 1
+
+        _dedupe_and_enrich()
+
+    return {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "days": int(days),
+        "scanned": len(scoped_rows),
+        "flagged": len(flagged),
+        "updated": updated,
+        "sample": flagged[:30],
+    }
 
 
 def get_strategies() -> list[dict[str, Any]]:

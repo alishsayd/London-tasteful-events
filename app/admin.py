@@ -11,6 +11,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 from app.db import (
     add_strategy,
+    cleanup_recent_discovery_garbage,
     get_active_orgs,
     get_discovery_runs,
     get_latest_discovery_run,
@@ -403,6 +404,25 @@ def run_discovery_now():
         search_provider=str(data.get("search_provider") or "").strip() or None,
     )
 
+    return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
+
+
+@app.route("/api/admin/discovery/cleanup", methods=["POST"])
+def cleanup_discovery_now():
+    data = request.json or {}
+
+    def _optional_int(name: str, default: int) -> int:
+        try:
+            value = int(data.get(name, default))
+            return value if value > 0 else default
+        except Exception:
+            return default
+
+    summary = cleanup_recent_discovery_garbage(
+        days=_optional_int("days", 7),
+        dry_run=bool(data.get("dry_run", False)),
+        limit=_optional_int("limit", 1000),
+    )
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
 
 

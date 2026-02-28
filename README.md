@@ -44,6 +44,7 @@ Default local DB file: `orgs.db` (created automatically).
 - `GET|POST /api/admin/strategies`
 - `PATCH /api/admin/strategies/<strategy_id>`
 - `POST /api/admin/discovery/run` (supports optional `search_provider`)
+- `POST /api/admin/discovery/cleanup` (cleanup recent auto-discovery garbage rows)
 - `POST /api/orgs`
 - `POST /api/orgs/bulk`
 - `GET /api/stats`

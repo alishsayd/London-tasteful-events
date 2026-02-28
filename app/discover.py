@@ -186,6 +186,63 @@ NON_ENTITY_SOURCE_DOMAINS = {
     "lectures.london",
 }
 
+# Suffix-based non-entity filters catch subdomains and common publishing/platform sites.
+NON_ENTITY_SOURCE_DOMAIN_SUFFIXES = (
+    "ianvisits.co.uk",
+    "lectures.london",
+    "github.com",
+    "bsky.app",
+    "bsky.social",
+    "blueskyweb.xyz",
+    "theguardian.com",
+    "guardian.co.uk",
+    "ft.com",
+    "eventindustrynews.com",
+    "culturecalling.com",
+    "london.com",
+)
+
+SEARCH_REJECT_DOMAIN_SUFFIXES = (
+    "github.com",
+    "bsky.app",
+    "bsky.social",
+    "blueskyweb.xyz",
+    "theguardian.com",
+    "guardian.co.uk",
+    "ft.com",
+    "eventindustrynews.com",
+)
+
+BAD_NAME_PHRASES = {
+    "book your tickets",
+    "courses and meetings",
+    "support ianvisits",
+    "subscribe to read",
+    "event industry news",
+    "arts events listings",
+    "events listings",
+    "overview",
+}
+
+INSTITUTION_KEYWORDS = (
+    "museum",
+    "gallery",
+    "cinema",
+    "theatre",
+    "cultural centre",
+    "cultural center",
+    "cultural institute",
+    "art centre",
+    "art center",
+    "arts centre",
+    "arts center",
+    "foundation",
+    "institute",
+    "house",
+    "bookshop",
+    "community arts",
+)
+
 BOROUGH_ALIASES = {
     "kensington and chelsea": ["kensington and chelsea", "kensington & chelsea"],
 }
@@ -291,6 +348,49 @@ def _domain(url: str | None) -> str:
         return (urlparse(url).netloc or "").lower().replace("www.", "")
     except Exception:
         return ""
+
+
+def _domain_matches_suffix(domain: str | None, suffixes: tuple[str, ...]) -> bool:
+    value = str(domain or "").lower().strip().replace("www.", "")
+    if not value:
+        return False
+    return any(value == suffix or value.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def _domain_is_non_entity_source(domain: str | None) -> bool:
+    value = str(domain or "").lower().strip().replace("www.", "")
+    if not value:
+        return True
+    return value in NON_ENTITY_SOURCE_DOMAINS or _domain_matches_suffix(value, NON_ENTITY_SOURCE_DOMAIN_SUFFIXES)
+
+
+def _is_event_detail_path(path: str | None) -> bool:
+    segments = [segment for segment in str(path or "").lower().split("/") if segment]
+    if not segments:
+        return False
+
+    markers = {"event", "events", "programme", "program", "calendar", "whatson", "whats-on"}
+    for idx, segment in enumerate(segments):
+        if segment in markers and idx + 1 < len(segments):
+            return True
+    return False
+
+
+def _seed_url_is_likely_org_entry(url: str) -> bool:
+    parsed = urlparse(url)
+    domain = _domain(url)
+    if _domain_matches_suffix(domain, SEARCH_REJECT_DOMAIN_SUFFIXES):
+        return False
+
+    path = (parsed.path or "").lower()
+    if domain in AGGREGATOR_SOURCE_DOMAINS:
+        return True
+
+    if any(hint in path for hint in ARTICLE_PATH_HINTS):
+        return False
+    if _is_event_detail_path(path):
+        return False
+    return True
 
 
 def _normalize_homepage(url: str) -> str:
@@ -448,8 +548,30 @@ def _is_valid_org_name(name: str) -> bool:
     if _looks_like_program_text(lower) and _word_count(cleaned) > 2:
         return False
 
-    blocked_exact = {"home", "events", "what s on", "whats on", "calendar", "program", "programme"}
-    return lower not in blocked_exact
+    blocked_exact = {
+        "home",
+        "events",
+        "what s on",
+        "whats on",
+        "calendar",
+        "program",
+        "programme",
+        "github",
+        "bluesky",
+        "bluesky social",
+    }
+    if lower in blocked_exact:
+        return False
+
+    if any(phrase in lower for phrase in BAD_NAME_PHRASES):
+        return False
+
+    if lower.endswith(" overview"):
+        return False
+    if lower.startswith(("book ", "support ", "subscribe ")):
+        return False
+
+    return True
 
 
 def _unwrap_duckduckgo_href(href: str) -> str | None:
@@ -494,6 +616,8 @@ def _should_skip_url(url: str) -> bool:
         return True
 
     if domain in BLOCKED_DOMAINS:
+        return True
+    if _domain_matches_suffix(domain, SEARCH_REJECT_DOMAIN_SUFFIXES):
         return True
 
     if parsed.path.lower().endswith((".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".zip")):
@@ -921,7 +1045,7 @@ def _infer_category(text_blob: str) -> str:
 def _extract_events_url(page_url: str, soup: BeautifulSoup) -> str | None:
     parsed_page = urlparse(page_url)
     page_path = (parsed_page.path or "").lower()
-    if any(hint in page_path for hint in EVENT_URL_HINTS):
+    if any(hint in page_path for hint in EVENT_URL_HINTS) and not _is_event_detail_path(page_path):
         return page_url
 
     best_url = None
@@ -940,6 +1064,8 @@ def _extract_events_url(page_url: str, soup: BeautifulSoup) -> str | None:
         parsed = urlparse(resolved)
         path = (parsed.path or "").lower()
         if not any(hint in path for hint in EVENT_URL_HINTS):
+            continue
+        if _is_event_detail_path(path):
             continue
 
         score = 0
@@ -965,12 +1091,33 @@ def _is_london_related(text_blob: str) -> bool:
     return _infer_borough(lower) is not None
 
 
+def _contains_institution_keyword(value: str | None) -> bool:
+    blob = _normalize_token(value)
+    if not blob:
+        return False
+    return any(_normalize_token(keyword) in blob for keyword in INSTITUTION_KEYWORDS)
+
+
+def _looks_like_non_cultural_academic(name: str, text_blob: str) -> bool:
+    normalized_name = _normalize_token(name)
+    if not normalized_name:
+        return False
+
+    academic_markers = ("university", "college", "school", "lse", "soas")
+    if not any(marker in normalized_name.split(" ") or marker in normalized_name for marker in academic_markers):
+        return False
+
+    culture_markers = ("museum", "gallery", "cinema", "theatre", "cultural centre", "cultural center", "art centre", "arts center")
+    normalized_blob = _normalize_token(text_blob)
+    return not any(marker in normalized_blob for marker in culture_markers)
+
+
 def _extract_org_candidate(url: str, timeout: int) -> dict[str, Any] | None:
     response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
     response.raise_for_status()
 
     resolved_domain = _domain(response.url)
-    if resolved_domain in NON_ENTITY_SOURCE_DOMAINS:
+    if _domain_is_non_entity_source(resolved_domain):
         return None
 
     if not _looks_like_html_response(response):
@@ -993,16 +1140,24 @@ def _extract_org_candidate(url: str, timeout: int) -> dict[str, Any] | None:
     homepage = _normalize_homepage(response.url)
     events_url = _extract_events_url(response.url, soup)
     borough = _infer_borough(text_blob)
-    category = _infer_category(text_blob)
+    category_blob = _clean_text(" ".join([name, title, description, response.url, page_text[:2000]]))
+    category = _infer_category(category_blob)
 
     article_like = _looks_like_article_or_listicle(response.url, title, description, page_text)
     program_like = _looks_like_program_page(response.url, title, name)
     domain_match = _name_matches_domain(name, response.url)
     has_schema = _has_org_schema_markup(soup)
+    has_institution_keyword = _contains_institution_keyword(" ".join([name, title, description, page_text[:2000]]))
 
-    if article_like and not domain_match and not has_schema:
+    if _looks_like_non_cultural_academic(name, text_blob):
         return None
-    if program_like and not domain_match and not has_schema:
+    if not has_institution_keyword and not (has_schema and domain_match):
+        return None
+    if article_like:
+        return None
+    if program_like:
+        return None
+    if _is_event_detail_path(urlparse(response.url).path):
         return None
 
     if not description:
@@ -1501,6 +1656,8 @@ def run_discovery_cycle(
             for url in results:
                 if _should_skip_url(url):
                     continue
+                if not _seed_url_is_likely_org_entry(url):
+                    continue
                 key = url.lower().strip()
                 if key in seen_urls:
                     continue
@@ -1534,6 +1691,8 @@ def run_discovery_cycle(
 
             for url in expanded:
                 if _should_skip_url(url):
+                    continue
+                if not _seed_url_is_likely_org_entry(url):
                     continue
                 key = url.lower().strip()
                 if key in seen_urls:

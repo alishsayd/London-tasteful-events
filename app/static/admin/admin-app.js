@@ -336,6 +336,32 @@ async function runDiscoveryNow() {
   }
 }
 
+async function cleanupDiscoveryNow() {
+  ui.isBusy = true;
+  render();
+  try {
+    const payload = await apiRequest("/api/admin/discovery/cleanup", {
+      method: "POST",
+      body: JSON.stringify({
+        days: 7,
+        dry_run: false,
+        limit: 1500,
+      }),
+    });
+
+    state = payload.state || state;
+    const summary = payload.summary || {};
+    const updated = Number(summary.updated || 0);
+    const flagged = Number(summary.flagged || 0);
+    setNotice(`Cleanup complete: ${updated} updated (${flagged} flagged).`);
+  } catch (error) {
+    setNotice(error.message);
+  } finally {
+    ui.isBusy = false;
+    render();
+  }
+}
+
 async function moveActiveOrgToQueue(orgId) {
   if (!orgId) return;
   const org = (state.active_orgs || []).find((item) => item.id === orgId) || null;
@@ -667,6 +693,7 @@ function renderDiscovery() {
 
       <div class="card-actions">
         <button class="primary-btn" data-action="run-discovery" ${ui.isBusy ? "disabled" : ""}>Run discovery now</button>
+        <button class="ghost-btn" data-action="cleanup-discovery" ${ui.isBusy ? "disabled" : ""}>Cleanup recent discovery</button>
       </div>
 
       ${latestSummary}
@@ -802,6 +829,11 @@ app.addEventListener("click", async (event) => {
 
   if (action === "run-discovery") {
     await runDiscoveryNow();
+    return;
+  }
+
+  if (action === "cleanup-discovery") {
+    await cleanupDiscoveryNow();
     return;
   }
 
