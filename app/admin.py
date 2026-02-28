@@ -148,23 +148,27 @@ def add_org():
     if not data.get("name"):
         return jsonify({"error": "name required"}), 400
 
-    org_id = upsert_org(
-        name=data["name"],
-        homepage=data.get("homepage"),
-        events_url=data.get("events_url"),
-        description=data.get("description"),
-        borough=data.get("borough"),
-        category=data.get("category"),
-        source=data.get("source", "manual"),
-    )
+    try:
+        org_id = upsert_org(
+            name=data["name"],
+            homepage=data.get("homepage"),
+            events_url=data.get("events_url"),
+            description=data.get("description"),
+            borough=data.get("borough"),
+            category=data.get("category"),
+            source=data.get("source", "manual"),
+        )
 
-    events_url = str(data.get("events_url") or "").strip()
-    if not events_url:
-        update_org(org_id, issue_state="open", review_needed_reason="Missing events URL", active=True, crawl_paused=False)
-    else:
-        update_org(org_id, issue_state="none", review_needed_reason=None, active=True, crawl_paused=False)
+        events_url = str(data.get("events_url") or "").strip()
+        if not events_url:
+            update_org(org_id, issue_state="open", review_needed_reason="Missing events URL", active=True, crawl_paused=False)
+        else:
+            update_org(org_id, issue_state="none", review_needed_reason=None, active=True, crawl_paused=False)
 
-    return jsonify({"ok": True, "id": org_id})
+        return jsonify({"ok": True, "id": org_id})
+    except Exception as exc:
+        app.logger.exception("Failed to add org via /api/orgs")
+        return jsonify({"error": "Failed to add org", "details": str(exc), "type": exc.__class__.__name__}), 500
 
 
 @app.route("/api/orgs/bulk", methods=["POST"])
