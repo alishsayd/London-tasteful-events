@@ -21,6 +21,11 @@ Default local DB file: `orgs.db` (created automatically).
 
 - `DATABASE_URL`: required in production
 - `AUTO_BOOTSTRAP_ORGS`: defaults to `true`; seeds from `orgs_bootstrap.json` when DB is empty
+- `DISCOVERY_SEARCH_PROVIDER`: `duckduckgo` (default) or `openai_web`
+- `OPENAI_API_KEY`: required when `DISCOVERY_SEARCH_PROVIDER=openai_web`
+- `DISCOVERY_OPENAI_MODEL`: defaults to `gpt-5`
+- `DISCOVERY_OPENAI_EXTERNAL_WEB_ACCESS`: defaults to `true`
+- `DISCOVERY_OPENAI_FALLBACK_TO_DUCKDUCKGO`: defaults to `true`
 
 ## Deploy (Render)
 
@@ -35,6 +40,7 @@ Default local DB file: `orgs.db` (created automatically).
 - `POST /api/admin/review/<org_id>`
 - `GET|POST /api/admin/strategies`
 - `PATCH /api/admin/strategies/<strategy_id>`
+- `POST /api/admin/discovery/run` (supports optional `search_provider`)
 - `POST /api/orgs`
 - `POST /api/orgs/bulk`
 - `GET /api/stats`

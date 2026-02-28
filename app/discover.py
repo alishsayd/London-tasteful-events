@@ -42,6 +42,7 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 # London boroughs — focus on dense cultural areas but keep full city coverage
 BOROUGHS = [
@@ -497,6 +498,197 @@ def _search_duckduckgo(query: str, max_results: int, timeout: int) -> list[str]:
         _collect_urls(soup.select("a[href]"))
 
     return urls
+
+
+def _extract_output_text_from_response(payload: dict[str, Any]) -> str:
+    # `output_text` is SDK-only, but some API responses can still include it.
+    text_value = _clean_text(payload.get("output_text"))
+    if text_value:
+        return text_value
+
+    chunks: list[str] = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") == "output_text":
+                text = _clean_text(content.get("text"))
+                if text:
+                    chunks.append(text)
+
+    return "\n".join(chunks).strip()
+
+
+def _extract_urls_from_text_blob(text_blob: str, max_results: int) -> list[str]:
+    text_blob = _clean_text(text_blob)
+    if not text_blob:
+        return []
+
+    candidate_urls: list[str] = []
+
+    def _push(url_value: str | None) -> None:
+        if not url_value:
+            return
+        clean = url_value.strip().strip(".,);]}>\"'")
+        if clean and clean not in candidate_urls:
+            candidate_urls.append(clean)
+
+    raw = text_blob
+    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE)
+    if fenced_match:
+        raw = fenced_match.group(1).strip()
+
+    parsed_json = None
+    try:
+        parsed_json = json.loads(raw)
+    except Exception:
+        parsed_json = None
+
+    if parsed_json is not None:
+        if isinstance(parsed_json, list):
+            for item in parsed_json:
+                if isinstance(item, str):
+                    _push(item)
+                elif isinstance(item, dict):
+                    for key in ("url", "homepage", "events_url", "link"):
+                        if isinstance(item.get(key), str):
+                            _push(item.get(key))
+        elif isinstance(parsed_json, dict):
+            for key in ("urls", "results", "orgs", "organizations", "items", "links"):
+                value = parsed_json.get(key)
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, str):
+                            _push(item)
+                        elif isinstance(item, dict):
+                            for item_key in ("url", "homepage", "events_url", "link"):
+                                if isinstance(item.get(item_key), str):
+                                    _push(item.get(item_key))
+
+    if not candidate_urls:
+        for found in re.findall(r"https?://[^\s\"'<>]+", text_blob):
+            _push(found)
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in candidate_urls:
+        if _should_skip_url(item):
+            continue
+        key = item.lower().strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        urls.append(item)
+        if len(urls) >= max_results:
+            break
+    return urls
+
+
+def _extract_urls_from_web_sources(payload: dict[str, Any], max_results: int) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def _walk(value: Any) -> None:
+        if len(urls) >= max_results:
+            return
+        if isinstance(value, dict):
+            source_list = value.get("sources")
+            if isinstance(source_list, list):
+                for source in source_list:
+                    if not isinstance(source, dict):
+                        continue
+                    source_url = source.get("url")
+                    if not isinstance(source_url, str):
+                        continue
+                    if _should_skip_url(source_url):
+                        continue
+                    key = source_url.lower().strip()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    urls.append(source_url)
+                    if len(urls) >= max_results:
+                        return
+            for item in value.values():
+                _walk(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    _walk(payload)
+    return urls
+
+
+def _search_openai_web(query: str, max_results: int, timeout: int) -> list[str]:
+    api_key = _clean_text(os.getenv("OPENAI_API_KEY"))
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for DISCOVERY_SEARCH_PROVIDER=openai_web")
+
+    model = _clean_text(os.getenv("DISCOVERY_OPENAI_MODEL")) or "gpt-5"
+    external_web_access = _env_bool("DISCOVERY_OPENAI_EXTERNAL_WEB_ACCESS", True)
+
+    prompt = (
+        "Use web search and return JSON only.\n"
+        f"Find London organisation entities relevant to query: {query}\n"
+        "Keep only institution entities (museum, gallery, cultural centre/institute/house, community arts venue).\n"
+        "Exclude aggregator/directory/article/listicle pages and one-off program pages.\n"
+        f"Return JSON object with key \"urls\": array of at most {max_results} unique absolute URLs."
+    )
+
+    payload = {
+        "model": model,
+        "input": prompt,
+        "tool_choice": "auto",
+        "tools": [
+            {
+                "type": "web_search",
+                "external_web_access": external_web_access,
+                "user_location": {
+                    "type": "approximate",
+                    "country": "GB",
+                    "city": "London",
+                    "region": "London",
+                },
+            }
+        ],
+        "text": {"format": {"type": "json_object"}},
+        "max_output_tokens": 700,
+        "include": ["web_search_call.action.sources"],
+    }
+
+    response = requests.post(
+        OPENAI_RESPONSES_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=max(20, timeout + 10),
+    )
+    response.raise_for_status()
+
+    response_payload: dict[str, Any] = response.json()
+    response_text = _extract_output_text_from_response(response_payload)
+    from_text = _extract_urls_from_text_blob(response_text, max_results=max_results)
+    if from_text:
+        return from_text
+    return _extract_urls_from_web_sources(response_payload, max_results=max_results)
+
+
+def _search_web(query: str, max_results: int, timeout: int, provider: str) -> list[str]:
+    provider_key = _normalize_token(provider).replace(" ", "_") or "duckduckgo"
+    if provider_key in {"openai_web", "openai"}:
+        try:
+            return _search_openai_web(query=query, max_results=max_results, timeout=timeout)
+        except Exception:
+            if _env_bool("DISCOVERY_OPENAI_FALLBACK_TO_DUCKDUCKGO", True):
+                return _search_duckduckgo(query=query, max_results=max_results, timeout=timeout)
+            raise
+
+    return _search_duckduckgo(query=query, max_results=max_results, timeout=timeout)
 
 
 def _expand_from_aggregator(url: str, timeout: int, max_results: int) -> list[str]:
@@ -984,6 +1176,15 @@ def _env_int(key: str, fallback: int) -> int:
         return fallback
 
 
+def _env_bool(key: str, fallback: bool) -> bool:
+    raw = str(os.getenv(key, "1" if fallback else "0")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
 def _parse_discovery_dt(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -1009,6 +1210,7 @@ def run_discovery_cycle(
     dry_run: bool = False,
     borough: str | None = None,
     category: str | None = None,
+    search_provider: str | None = None,
 ) -> dict[str, Any]:
     """Run one full discovery cycle and upsert discovered organisations."""
 
@@ -1020,6 +1222,7 @@ def run_discovery_cycle(
     request_timeout = request_timeout or _env_int("DISCOVERY_REQUEST_TIMEOUT", 12)
     lock_window_minutes = _env_int("DISCOVERY_RUN_LOCK_MINUTES", 90)
     manual_unlock_minutes = _env_int("DISCOVERY_MANUAL_UNLOCK_MINUTES", 5)
+    search_provider = _clean_text(search_provider or os.getenv("DISCOVERY_SEARCH_PROVIDER") or "duckduckgo")
 
     running = get_latest_running_discovery_run()
     if running:
@@ -1082,6 +1285,7 @@ def run_discovery_cycle(
             "max_candidates": max_candidates,
             "request_timeout": request_timeout,
             "dry_run": dry_run,
+            "search_provider": search_provider,
         },
     )
 
@@ -1095,7 +1299,12 @@ def run_discovery_cycle(
         for item in queries:
             query = item["query"]
             try:
-                results = _search_duckduckgo(query=query, max_results=max_results_per_query, timeout=request_timeout)
+                results = _search_web(
+                    query=query,
+                    max_results=max_results_per_query,
+                    timeout=request_timeout,
+                    provider=search_provider,
+                )
             except Exception:
                 query_errors += 1
                 continue
@@ -1183,6 +1392,7 @@ def run_discovery_cycle(
             "candidate_count": len(candidates),
             "upserted_count": upserted_count,
             "dry_run": dry_run,
+            "search_provider": search_provider,
         }
         finish_discovery_run(
             run_id,
@@ -1220,6 +1430,7 @@ def main():
     parser.add_argument("--max-results-per-query", type=int)
     parser.add_argument("--max-candidates", type=int)
     parser.add_argument("--timeout", type=int)
+    parser.add_argument("--search-provider", choices=["duckduckgo", "openai_web"], help="Discovery search provider")
     parser.add_argument("--add-strategy", help="Optional quick way to add and activate a new strategy note")
     args = parser.parse_args()
 
@@ -1259,6 +1470,7 @@ def main():
             dry_run=args.dry_run,
             borough=args.borough,
             category=args.category,
+            search_provider=args.search_provider,
         )
         print(json.dumps(summary, indent=2))
         return

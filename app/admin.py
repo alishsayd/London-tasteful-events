@@ -359,6 +359,7 @@ def run_discovery_now():
         dry_run=bool(data.get("dry_run", False)),
         borough=str(data.get("borough") or "").strip() or None,
         category=str(data.get("category") or "").strip() or None,
+        search_provider=str(data.get("search_provider") or "").strip() or None,
     )
 
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
