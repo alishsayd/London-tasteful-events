@@ -241,6 +241,11 @@ def review_org(org_id):
     if isinstance(events_url, str):
         updates["events_url"] = events_url.strip() or None
 
+    if isinstance(data.get("name"), str):
+        name_value = data.get("name").strip()
+        if name_value:
+            updates["name"] = name_value
+
     if isinstance(data.get("borough"), str):
         updates["borough"] = data.get("borough").strip() or None
 

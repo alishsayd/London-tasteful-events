@@ -10,6 +10,43 @@ const ORG_TYPES = [
   "other",
 ];
 
+const BOROUGH_OPTIONS = [
+  "Hackney",
+  "Tower Hamlets",
+  "Southwark",
+  "Lambeth",
+  "Camden",
+  "Islington",
+  "Westminster",
+  "City of Westminster",
+  "Kensington and Chelsea",
+  "Hammersmith and Fulham",
+  "Lewisham",
+  "Greenwich",
+  "Wandsworth",
+  "Haringey",
+  "Newham",
+  "City of London",
+  "Waltham Forest",
+  "Barking and Dagenham",
+  "Croydon",
+  "Ealing",
+  "Brent",
+  "Enfield",
+  "Hounslow",
+  "Richmond upon Thames",
+  "Kingston upon Thames",
+  "Bromley",
+  "Barnet",
+  "Redbridge",
+  "Harrow",
+  "Havering",
+  "Hillingdon",
+  "Merton",
+  "Sutton",
+  "Bexley",
+];
+
 const app = document.getElementById("app");
 
 let state = window.APP_INITIAL_STATE || {
@@ -38,6 +75,37 @@ const ui = {
     description: "",
   },
 };
+
+function renderSelectOptions(values, selectedValue, emptyLabel = "Unspecified") {
+  const selected = String(selectedValue || "").trim();
+  const uniqueValues = [];
+  const seen = new Set();
+
+  for (const value of values || []) {
+    const clean = String(value || "").trim();
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    uniqueValues.push(clean);
+  }
+  if (selected && !seen.has(selected)) {
+    uniqueValues.unshift(selected);
+  }
+
+  return `
+    <option value="">${escapeHtml(emptyLabel)}</option>
+    ${uniqueValues
+      .map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`)
+      .join("")}
+  `;
+}
+
+function renderBoroughOptions(selectedValue) {
+  return renderSelectOptions(BOROUGH_OPTIONS, selectedValue, "Select borough");
+}
+
+function renderCategoryOptions(selectedValue) {
+  return renderSelectOptions(ORG_TYPES, selectedValue, "Select type");
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -73,11 +141,14 @@ function syncCurrentQueue() {
 }
 
 function ensureQueueDraft(org) {
-  if (!org) return { feedback: "", events_url: "" };
+  if (!org) return { feedback: "", events_url: "", name: "", borough: "", category: "other" };
   if (!ui.queueDrafts[org.id]) {
     ui.queueDrafts[org.id] = {
       feedback: org.notes || "",
       events_url: org.events_url || "",
+      name: org.name || "",
+      borough: org.borough || "",
+      category: org.category || "other",
     };
   }
   return ui.queueDrafts[org.id];
@@ -124,6 +195,9 @@ async function saveQueueAction(action) {
         action,
         feedback: (draft.feedback || "").trim(),
         events_url: (draft.events_url || "").trim(),
+        name: (draft.name || "").trim(),
+        borough: (draft.borough || "").trim(),
+        category: (draft.category || "").trim(),
       }),
     });
 
@@ -338,8 +412,7 @@ function renderQueue() {
 
         <div class="meta-grid">
           <div><label>Reason</label><p>${escapeHtml(current.queue_reason || "-")}</p></div>
-          <div><label>Borough</label><p>${escapeHtml(current.borough || "-")}</p></div>
-          <div><label>Type</label><p>${escapeHtml(current.category || "-")}</p></div>
+          <div><label>Status</label><p>${escapeHtml(current.status || "-")}</p></div>
           <div><label>Last crawled</label><p>${escapeHtml(formatDate(current.last_crawled_at))}</p></div>
           <div><label>Last successful extract</label><p>${escapeHtml(formatDate(current.last_successful_event_extract_at))}</p></div>
           <div><label>Failure/empty streak</label><p>${escapeHtml(current.consecutive_failures || 0)} / ${escapeHtml(current.consecutive_empty_extracts || 0)}</p></div>
@@ -349,6 +422,19 @@ function renderQueue() {
           ${current.homepage ? `<a href="${escapeHtml(current.homepage)}" target="_blank" rel="noreferrer">Open website</a>` : ""}
           ${current.events_url ? `<a href="${escapeHtml(current.events_url)}" target="_blank" rel="noreferrer">Open events page</a>` : ""}
         </div>
+
+        <label class="feedback-label" for="queue-name">Org name</label>
+        <input id="queue-name" data-action="queue-name-input" data-id="${current.id}" value="${escapeHtml(draft.name)}" placeholder="Organization name" />
+
+        <label class="feedback-label" for="queue-borough">Borough</label>
+        <select id="queue-borough" data-action="queue-borough-input" data-id="${current.id}">
+          ${renderBoroughOptions(draft.borough)}
+        </select>
+
+        <label class="feedback-label" for="queue-category">Type</label>
+        <select id="queue-category" data-action="queue-category-input" data-id="${current.id}">
+          ${renderCategoryOptions(draft.category)}
+        </select>
 
         <label class="feedback-label" for="queue-events-url">Events URL fix (optional)</label>
         <input id="queue-events-url" data-action="queue-events-url-input" data-id="${current.id}" value="${escapeHtml(draft.events_url)}" placeholder="https://.../events" />
@@ -468,11 +554,13 @@ function renderAdd() {
           <input name="events_url" type="url" value="${escapeHtml(ui.manualDraft.events_url)}" placeholder="https://.../events" />
         </label>
         <label>Borough
-          <input name="borough" value="${escapeHtml(ui.manualDraft.borough)}" placeholder="Hackney" required />
+          <select name="borough" required>
+            ${renderBoroughOptions(ui.manualDraft.borough)}
+          </select>
         </label>
         <label>Category
           <select name="category">
-            ${ORG_TYPES.map((item) => `<option value="${escapeHtml(item)}" ${ui.manualDraft.category === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+            ${renderCategoryOptions(ui.manualDraft.category)}
           </select>
         </label>
         <label>Description
@@ -729,7 +817,7 @@ app.addEventListener("input", (event) => {
   if (target.dataset.action === "queue-feedback-input") {
     const id = Number(target.dataset.id);
     if (!id) return;
-    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "" };
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
     draft.feedback = target.value;
     ui.queueDrafts[id] = draft;
     return;
@@ -738,8 +826,35 @@ app.addEventListener("input", (event) => {
   if (target.dataset.action === "queue-events-url-input") {
     const id = Number(target.dataset.id);
     if (!id) return;
-    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "" };
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
     draft.events_url = target.value;
+    ui.queueDrafts[id] = draft;
+    return;
+  }
+
+  if (target.dataset.action === "queue-name-input") {
+    const id = Number(target.dataset.id);
+    if (!id) return;
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+    draft.name = target.value;
+    ui.queueDrafts[id] = draft;
+    return;
+  }
+
+  if (target.dataset.action === "queue-borough-input") {
+    const id = Number(target.dataset.id);
+    if (!id) return;
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+    draft.borough = target.value;
+    ui.queueDrafts[id] = draft;
+    return;
+  }
+
+  if (target.dataset.action === "queue-category-input") {
+    const id = Number(target.dataset.id);
+    if (!id) return;
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+    draft.category = target.value;
     ui.queueDrafts[id] = draft;
     return;
   }
