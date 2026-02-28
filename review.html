@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Org Seeder — London Tasteful Events</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    line-height: 1.5;
+}
+a { color: #7eb8ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Top bar */
+.topbar {
+    background: #151515;
+    border-bottom: 1px solid #2a2a2a;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+.topbar h1 { font-size: 15px; font-weight: 600; color: #fff; }
+.stats { display: flex; gap: 16px; font-size: 13px; }
+.stat { color: #888; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+.stat:hover { background: #222; }
+.stat.active { background: #2a2a2a; }
+.stat strong { color: #e0e0e0; }
+.stat.approved strong { color: #4ade80; }
+.stat.rejected strong { color: #f87171; }
+.stat.maybe strong { color: #fbbf24; }
+.stat.pending strong { color: #7eb8ff; }
+
+/* Mode tabs */
+.tabs {
+    background: #151515;
+    border-bottom: 1px solid #2a2a2a;
+    padding: 8px 24px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.tab {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #aaa;
+    cursor: pointer;
+    border: none;
+    background: none;
+    font-family: inherit;
+}
+.tab:hover { background: #222; color: #fff; }
+.tab.active { background: #2a2a2a; color: #fff; }
+.tab-right { margin-left: auto; }
+.btn-export {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #4ade80;
+    background: #166534;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+.btn-export:hover { background: #15803d; }
+.btn-reset {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #f87171;
+    background: #7f1d1d;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+.btn-reset:hover { background: #991b1b; }
+
+/* Container */
+.container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+/* Review card */
+.review-card {
+    max-width: 700px;
+    margin: 32px auto;
+    background: #151515;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    overflow: hidden;
+}
+.review-header {
+    padding: 24px 28px 16px;
+}
+.review-header h2 { font-size: 22px; color: #fff; margin-bottom: 4px; }
+.review-meta {
+    font-size: 13px;
+    color: #666;
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+}
+.review-meta span {
+    background: #1e1e1e;
+    padding: 2px 10px;
+    border-radius: 4px;
+}
+.review-body { padding: 16px 28px; }
+.review-body p { color: #bbb; font-size: 14px; margin-bottom: 12px; }
+.review-links { display: flex; gap: 16px; margin-bottom: 16px; }
+.review-links a {
+    font-size: 13px;
+    padding: 4px 12px;
+    background: #1e1e1e;
+    border-radius: 4px;
+}
+.review-links a:hover { background: #2a2a2a; text-decoration: none; }
+.edit-row {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.edit-row label {
+    font-size: 12px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.edit-input {
+    background: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    color: #e0e0e0;
+    padding: 6px 10px;
+    font-size: 13px;
+    width: 100%;
+    font-family: inherit;
+}
+.edit-input:focus { border-color: #444; outline: none; }
+.notes-input {
+    width: 100%;
+    padding: 10px 14px;
+    margin-top: 12px;
+    background: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+}
+.notes-input::placeholder { color: #444; }
+.review-actions {
+    padding: 20px 28px;
+    border-top: 1px solid #1a1a1a;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+.remaining {
+    margin-left: auto;
+    font-size: 13px;
+    color: #666;
+}
+.btn {
+    padding: 10px 24px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+}
+.btn-approve { background: #166534; color: #4ade80; }
+.btn-approve:hover { background: #15803d; }
+.btn-reject { background: #7f1d1d; color: #f87171; }
+.btn-reject:hover { background: #991b1b; }
+.btn-maybe { background: #713f12; color: #fbbf24; }
+.btn-maybe:hover { background: #854d0e; }
+.btn-skip { background: #1e1e1e; color: #888; }
+.btn-skip:hover { background: #2a2a2a; color: #ccc; }
+
+.shortcuts {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 12px;
+    color: #444;
+}
+.kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: monospace;
+    color: #aaa;
+    background: #1a1a1a;
+    margin: 0 2px;
+}
+
+/* Table view */
+.org-table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+.org-table th {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #666;
+    border-bottom: 1px solid #2a2a2a;
+    cursor: pointer;
+}
+.org-table th:hover { color: #aaa; }
+.org-table td {
+    padding: 10px 12px;
+    font-size: 14px;
+    border-bottom: 1px solid #1a1a1a;
+    vertical-align: top;
+}
+.org-table tr:hover { background: #151515; }
+.tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+}
+.tag-approved { background: #166534; color: #4ade80; }
+.tag-rejected { background: #7f1d1d; color: #f87171; }
+.tag-maybe { background: #713f12; color: #fbbf24; }
+.tag-pending { background: #1e3a5f; color: #7eb8ff; }
+.actions-cell { display: flex; gap: 4px; }
+.actions-cell .btn { padding: 4px 10px; font-size: 12px; }
+.empty {
+    text-align: center;
+    padding: 60px;
+    color: #666;
+}
+.done-card {
+    text-align: center;
+    padding: 60px;
+    max-width: 500px;
+    margin: 60px auto;
+}
+.done-card h2 { color: #4ade80; font-size: 24px; margin-bottom: 16px; }
+.done-stats { font-size: 14px; color: #666; line-height: 2; }
+.done-stats strong { color: #e0e0e0; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+    <h1>London Tasteful Events — Org Seeder</h1>
+    <div class="stats" id="stats-bar"></div>
+</div>
+
+<div class="tabs">
+    <button class="tab active" data-mode="review">Review Mode</button>
+    <button class="tab" data-mode="list" data-status="pending">Pending</button>
+    <button class="tab" data-mode="list" data-status="approved">Approved</button>
+    <button class="tab" data-mode="list" data-status="maybe">Maybe</button>
+    <button class="tab" data-mode="list" data-status="rejected">Rejected</button>
+    <button class="tab" data-mode="list" data-status="all">All</button>
+    <span class="tab-right"></span>
+    <button class="btn-export" onclick="exportApproved()">Export Approved JSON</button>
+    <button class="btn-reset" onclick="resetAll()">Reset All</button>
+</div>
+
+<div class="container" id="main"></div>
+
+<script>
+// ============================================================
+// EMBEDDED SEED DATA — 82 London cultural orgs
+// ============================================================
+const SEED_DATA = [
+  {"id":1,"name":"South London Gallery","homepage":"https://www.southlondongallery.org/","events_url":"https://www.southlondongallery.org/whats-on/","description":"Free contemporary art exhibitions, artist talks, film screenings, performances, supper clubs, zine fairs. Open late Wednesdays until 9pm.","borough":"Southwark","category":"gallery"},
+  {"id":2,"name":"Autograph","homepage":"https://autograph.org.uk/","events_url":"https://autograph.org.uk/exhibitions","description":"Free photography exhibitions exploring race, identity, representation and social justice. Based in Hackney since 1988.","borough":"Hackney","category":"gallery"},
+  {"id":3,"name":"Whitechapel Gallery","homepage":"https://www.whitechapelgallery.org/","events_url":"https://www.whitechapelgallery.org/exhibitions/","description":"Major contemporary art gallery. Free exhibitions on Thursday nights until 9pm. First Thursdays celebrations with curated East London art recommendations.","borough":"Tower Hamlets","category":"gallery"},
+  {"id":4,"name":"ICA (Institute of Contemporary Arts)","homepage":"https://www.ica.art/","events_url":"https://www.ica.art/whats-on","description":"Contemporary arts centre on The Mall. Open until 11pm Tue-Sun. Film, exhibitions, talks, music and performances.","borough":"Westminster","category":"gallery"},
+  {"id":5,"name":"Barbican Centre","homepage":"https://www.barbican.org.uk/","events_url":"https://www.barbican.org.uk/whats-on","description":"Major arts centre with gallery, cinema, theatre, concert hall. Gallery open late Thu-Sat until 8pm. Free foyer exhibitions and events.","borough":"City of London","category":"cultural centre"},
+  {"id":6,"name":"The Castle Cinema","homepage":"https://thecastlecinema.com/","events_url":"https://thecastlecinema.com/","description":"Independent crowdfunded community cinema in Hackney. Pay What You Can screenings. Member-shaped programming.","borough":"Hackney","category":"community cinema"},
+  {"id":7,"name":"The Lexi Cinema","homepage":"https://thelexicinema.co.uk/","events_url":"https://thelexicinema.co.uk/","description":"Volunteer-run independent cinema in Kensal Rise. 100% distributable profits go to charity.","borough":"Brent","category":"community cinema"},
+  {"id":8,"name":"Rio Cinema","homepage":"https://riocinema.org.uk/","events_url":"https://riocinema.org.uk/","description":"London's oldest community-run cinema in Dalston. Film festivals including Kurdish Film Festival, Fringe! Queer Film & Arts Fest, Doc'n Roll.","borough":"Hackney","category":"community cinema"},
+  {"id":9,"name":"Genesis Cinema","homepage":"https://www.genesiscinema.co.uk/","events_url":"https://www.genesiscinema.co.uk/","description":"Cultural hub in Whitechapel. Affordable films plus live music, poetry nights, swing events, festivals and community programming.","borough":"Tower Hamlets","category":"community cinema"},
+  {"id":10,"name":"The Garden Cinema","homepage":"https://www.thegardencinema.co.uk/","events_url":"https://www.thegardencinema.co.uk/","description":"Intimate two-screen cinema in Covent Garden. Bi-weekly free screenings for members. Bar events.","borough":"Camden","category":"community cinema"},
+  {"id":11,"name":"Rich Mix","homepage":"https://richmix.org.uk/","events_url":"https://richmix.org.uk/whats-on/","description":"Community arts space in Shoreditch. Three cinema screens, spoken word, theatre, live music. Three bars.","borough":"Tower Hamlets","category":"cultural centre"},
+  {"id":12,"name":"ArtHouse Crouch End","homepage":"https://www.arthousecrouchend.co.uk/","events_url":"https://www.arthousecrouchend.co.uk/whats-on/","description":"Cinema, art, live music, theatre, dance, workshops, comedy. Community-focused arts venue. Tickets from \u00a37.","borough":"Haringey","category":"community cinema"},
+  {"id":13,"name":"The Phoenix Cinema","homepage":"https://www.phoenixcinema.co.uk/","events_url":"https://www.phoenixcinema.co.uk/","description":"London's longest-running cinema, open since 1910. Independent not-for-profit single-screen cinema owned by charitable trust.","borough":"Barnet","category":"community cinema"},
+  {"id":14,"name":"Prince Charles Cinema","homepage":"https://princecharlescinema.com/","events_url":"https://princecharlescinema.com/","description":"Cult cinema in Leicester Square. Movie marathons, \u00a32.50 member tickets, sing-a-long screenings, event nights.","borough":"Westminster","category":"community cinema"},
+  {"id":15,"name":"BFI Southbank","homepage":"https://www.bfi.org.uk/bfi-southbank","events_url":"https://whatson.bfi.org.uk/Online/","description":"Four screens showing classic, independent and world cinema. Free BFI Mediatheque with hundreds of archive titles.","borough":"Lambeth","category":"community cinema"},
+  {"id":16,"name":"Gresham College","homepage":"https://www.gresham.ac.uk/","events_url":"https://www.gresham.ac.uk/whats-on","description":"Over 100 free public lectures per year on astronomy, medicine, history, politics, law and more. Based in Holborn.","borough":"Camden","category":"lecture series"},
+  {"id":17,"name":"Conway Hall","homepage":"https://conwayhall.org.uk/","events_url":"https://conwayhall.org.uk/whats-on/","description":"Home of the Ethical Society. Free speech platform with London Thinks debates, talks on social, political and cultural topics.","borough":"Camden","category":"lecture series"},
+  {"id":18,"name":"LSE Public Events","homepage":"https://www.lse.ac.uk/events","events_url":"https://www.lse.ac.uk/events","description":"Free public lecture programme with podcasts. Searchable by topic and speaker. Open to all.","borough":"Westminster","category":"lecture series"},
+  {"id":19,"name":"Royal Institute of Philosophy","homepage":"https://royalinstitutephilosophy.org/","events_url":"https://royalinstitutephilosophy.org/philosophy-events/","description":"Free public annual lecture series. Centenary series 2025/26: Philosophy in Retrospect and Prospect.","borough":"Camden","category":"lecture series"},
+  {"id":20,"name":"Intelligence Squared","homepage":"https://www.intelligencesquared.com/","events_url":"https://www.intelligencesquared.com/events/","description":"Debates, talks and discussions in politics, economics, history, science and culture. Venues include Union Chapel and Barbican.","borough":"Islington","category":"lecture series"},
+  {"id":21,"name":"How to Academy","homepage":"https://www.howtoacademy.com/","events_url":"https://www.howtoacademy.com/events","description":"Talks from thinkers, artists, scientists, entrepreneurs. Venues include Art Workers Guild in Bloomsbury and Barbican Hall.","borough":"Camden","category":"lecture series"},
+  {"id":22,"name":"London Review Bookshop","homepage":"https://www.londonreviewbookshop.co.uk/","events_url":"https://www.londonreviewbookshop.co.uk/events","description":"Author talks, readings, film screenings, debates about literature, history and politics. Events twice weekly.","borough":"Camden","category":"bookshop events"},
+  {"id":23,"name":"Foyles","homepage":"https://www.foyles.co.uk/","events_url":"https://www.foyles.co.uk/events","description":"Major independent bookshop on Charing Cross Road. Regular author conversations, panel discussions, literary talks.","borough":"Westminster","category":"bookshop events"},
+  {"id":24,"name":"Lala Books","homepage":"https://www.lalabooks.london/","events_url":"https://www.lalabooks.london/whats-on","description":"Independent bookshop hosting poetry nights, author readings, literary events. Rooted in local community.","borough":"Hackney","category":"bookshop events"},
+  {"id":25,"name":"Burley Fisher Books","homepage":"https://burleyfisherbooks.com/","events_url":"https://burleyfisherbooks.com/pages/events","description":"Independent bookshop in Dalston. Finalist for Independent Bookshop of the Year 2026. Regular events.","borough":"Hackney","category":"bookshop events"},
+  {"id":26,"name":"Backstory Books","homepage":"https://www.backstorybooks.com/","events_url":"https://www.backstorybooks.com/events","description":"Independent bookshop in Balham. Three-time consecutive finalist for Bookshop of the Year. Author events and discussions.","borough":"Wandsworth","category":"bookshop events"},
+  {"id":27,"name":"B\u00e0rd Books","homepage":"https://www.bardbooks.co.uk/","events_url":"https://www.bardbooks.co.uk/","description":"Independent bookshop on Roman Road. Two-time shortlisted for Bookshop of the Year.","borough":"Tower Hamlets","category":"bookshop events"},
+  {"id":28,"name":"BookBar","homepage":"https://www.bookbar.co.uk/","events_url":"https://www.bookbar.co.uk/","description":"Bookshop-bar with outposts in Chelsea and Islington. Finalist for Independent Bookshop of the Year 2026.","borough":"Islington","category":"bookshop events"},
+  {"id":29,"name":"The Albany","homepage":"https://www.thealbany.org.uk/","events_url":"https://www.thealbany.org.uk/whats-on/","description":"SE London's leading arts centre in Deptford. Community collaboration, artist development. Youth takeovers, over-65s arts club.","borough":"Lewisham","category":"cultural centre"},
+  {"id":30,"name":"Bernie Grant Arts Centre","homepage":"https://www.berniegrantcentre.co.uk/","events_url":"https://www.berniegrantcentre.co.uk/whats-on/","description":"\u00a315m multi-arts centre in Tottenham. 274-seat auditorium, studio, caf\u00e9/bar, enterprise centre.","borough":"Haringey","category":"cultural centre"},
+  {"id":31,"name":"Battersea Arts Centre","homepage":"https://bac.org.uk/","events_url":"https://bac.org.uk/whats-on/","description":"Home for radical theatre, workspace. Near Clapham Junction. Known for innovative community programming.","borough":"Wandsworth","category":"cultural centre"},
+  {"id":32,"name":"Old Diorama Arts Centre","homepage":"https://olddiorama.com/","events_url":"https://olddiorama.com/","description":"Euston's centre for artistic creation and community action. Home to creative organisations and artists.","borough":"Camden","category":"cultural centre"},
+  {"id":33,"name":"The Space","homepage":"https://space.org.uk/","events_url":"https://space.org.uk/whats-on/","description":"Performing arts centre in a converted church on the Isle of Dogs. Arts, events and workshops.","borough":"Tower Hamlets","category":"cultural centre"},
+  {"id":34,"name":"Second Wave Youth Arts","homepage":"https://secondwave.org.uk/","events_url":"https://secondwave.org.uk/","description":"Free youth arts programmes for ages 11-25 in Deptford. Drama, songwriting, music, film, photography.","borough":"Lewisham","category":"cultural centre"},
+  {"id":35,"name":"Brixton House","homepage":"https://brixtonhouse.co.uk/","events_url":"https://brixtonhouse.co.uk/whats-on/","description":"Formerly Ovalhouse Theatre. Theatre, dance, live art in Brixton. Focus on new work and diverse voices.","borough":"Lambeth","category":"theatre"},
+  {"id":36,"name":"London Hackspace","homepage":"https://london.hackspace.org.uk/","events_url":"https://london.hackspace.org.uk/","description":"Non-profit community-run workshop. 3D printing, laser cutting, electronics, metalwork. Open Wednesday evenings.","borough":"Tower Hamlets","category":"makers space"},
+  {"id":37,"name":"South London Makerspace","homepage":"https://southlondonmakerspace.org/","events_url":"https://southlondonmakerspace.org/","description":"Community workshop in Herne Hill. Laser cutter, screenprinting, 3D printing, ceramics. Member-run, volunteer basis.","borough":"Lambeth","category":"makers space"},
+  {"id":38,"name":"Makerversity","homepage":"https://www.makerversity.org/","events_url":"https://www.makerversity.org/","description":"Maker community in Somerset House. Wednesday breakfasts, members bar, discounted exhibitions and events.","borough":"Westminster","category":"makers space"},
+  {"id":39,"name":"Blackhorse Workshop","homepage":"https://www.blackhorseworkshop.co.uk/","events_url":"https://www.blackhorseworkshop.co.uk/","description":"Public resource workshop for making, mending and DIY. Space for the creative community with tools and technical support.","borough":"Waltham Forest","category":"makers space"},
+  {"id":40,"name":"London Sculpture Workshop","homepage":"https://londonsculptureworkshop.org/","events_url":"https://londonsculptureworkshop.org/","description":"London's first open access sculpture workshop. Metal, wood, mould-making, ceramics. Not-for-profit community interest company.","borough":"Hackney","category":"makers space"},
+  {"id":41,"name":"Apples and Snakes (Jawdance)","homepage":"https://applesandsnakes.org/","events_url":"https://applesandsnakes.org/event/jawdance/","description":"London's warmest spoken word and open mic night. Free to attend. Supportive space for all voices.","borough":"Hackney","category":"poetry readings"},
+  {"id":42,"name":"Hidden Literature (MY WORD!)","homepage":"https://hiddenliterature.com/","events_url":"https://hiddenliterature.com/london-poetry-open-mic/","description":"Open mic night at Grow Hackney. Spoken word, poetry, hip-hop, R&B, neo-soul. Welcoming to first-timers.","borough":"Hackney","category":"poetry readings"},
+  {"id":43,"name":"Grow Hackney","homepage":"https://www.growhackney.co.uk/","events_url":"https://www.growhackney.co.uk/events-calendar/","description":"Community venue hosting poetry, music, and cultural events in Hackney.","borough":"Hackney","category":"community space"},
+  {"id":44,"name":"Green Note","homepage":"https://www.greennote.co.uk/","events_url":"https://www.greennote.co.uk/","description":"Award-winning intimate live music venue and vegetarian caf\u00e9-bar in Camden. Folk, Americana, blues, jazz, world music every night.","borough":"Camden","category":"live music venue"},
+  {"id":45,"name":"Cafe Oto","homepage":"https://www.cafeoto.co.uk/","events_url":"https://www.cafeoto.co.uk/events/","description":"Experimental and avant-garde music in Dalston. Free jazz, improvisation, sound art. The weirdest and most creative sounds in London.","borough":"Hackney","category":"live music venue"},
+  {"id":46,"name":"The Lexington","homepage":"https://thelexington.co.uk/","events_url":"https://thelexington.co.uk/","description":"Bastion of independent music between King's Cross and Angel since 2008. Gigs, pop quizzes, events.","borough":"Islington","category":"live music venue"},
+  {"id":47,"name":"Union Chapel","homepage":"https://unionchapel.org.uk/","events_url":"https://unionchapel.org.uk/whats-on/","description":"Working church and stunningly beautiful live music venue in Highbury & Islington.","borough":"Islington","category":"live music venue"},
+  {"id":48,"name":"The Bull's Head (Barnes)","homepage":"https://www.thebullsheadbarnes.com/","events_url":"https://www.thebullsheadbarnes.com/","description":"Live music seven days a week for over 60 years. Iconic Jazz Room in Barnes.","borough":"Richmond upon Thames","category":"live music venue"},
+  {"id":49,"name":"Moth Club","homepage":"https://mothclub.co.uk/","events_url":"https://mothclub.co.uk/","description":"Former servicemen's club in Hackney. Intimate gigs. Secret shows from Lady Gaga, Foo Fighters and more.","borough":"Hackney","category":"live music venue"},
+  {"id":50,"name":"The Cockpit","homepage":"https://thecockpit.org.uk/","events_url":"https://thecockpit.org.uk/","description":"Small flexible fringe venue in Marylebone. Music, comedy, dance, and theatre.","borough":"Westminster","category":"theatre"},
+  {"id":51,"name":"Bread and Roses Theatre","homepage":"https://www.breadandrosestheatre.co.uk/","events_url":"https://www.breadandrosestheatre.co.uk/whats-on","description":"Consistent powerhouse of the South London fringe. Under 100 seats. New work focus.","borough":"Lambeth","category":"theatre"},
+  {"id":52,"name":"Hen and Chickens Theatre","homepage":"https://www.henandchickens.com/","events_url":"https://www.henandchickens.com/","description":"Jewel of North London fringe. Pub theatre above a bar. Home to Unrestricted View.","borough":"Islington","category":"theatre"},
+  {"id":53,"name":"Lion and Unicorn Theatre","homepage":"https://www.lionandunicorntheatre.com/","events_url":"https://www.lionandunicorntheatre.com/","description":"Black-box space above a Kentish Town pub. Daring, experimental work. Run by Proforca Theatre Company.","borough":"Camden","category":"theatre"},
+  {"id":54,"name":"The Finborough Theatre","homepage":"https://www.finboroughtheatre.co.uk/","events_url":"https://www.finboroughtheatre.co.uk/","description":"Pioneering West London fringe theatre. Known for discovering new talent. Running since 1980.","borough":"Kensington and Chelsea","category":"theatre"},
+  {"id":55,"name":"Pleasance Theatre","homepage":"https://www.pleasance.co.uk/islington","events_url":"https://www.pleasance.co.uk/islington","description":"One of the most exciting fringe theatres in London since 1995. Two spaces: Mainhouse (230) and Stagespace (54).","borough":"Islington","category":"theatre"},
+  {"id":56,"name":"Blue Elephant Theatre","homepage":"https://www.blueelephanttheatre.co.uk/","events_url":"https://www.blueelephanttheatre.co.uk/","description":"Fully wheelchair accessible fringe theatre in Camberwell.","borough":"Southwark","category":"theatre"},
+  {"id":57,"name":"Half Moon Theatre","homepage":"https://www.halfmoon.org.uk/","events_url":"https://www.halfmoon.org.uk/whats-on/","description":"UK's leading small-scale young people's venue and touring company. Based in Limehouse, East London.","borough":"Tower Hamlets","category":"theatre"},
+  {"id":58,"name":"Greenwich Theatre","homepage":"https://www.greenwichtheatre.org.uk/","events_url":"https://www.greenwichtheatre.org.uk/whats-on/","description":"Theatre in Greenwich, near the DLR and mainline station. Mix of professional and community programming.","borough":"Greenwich","category":"theatre"},
+  {"id":59,"name":"Tate Modern","homepage":"https://www.tate.org.uk/visit/tate-modern","events_url":"https://www.tate.org.uk/whats-on?gallery=tate-modern","description":"Free contemporary art. Tate Lates: art, music, film, talks and workshops until 10pm on select Fridays.","borough":"Southwark","category":"museum"},
+  {"id":60,"name":"Science Museum Lates","homepage":"https://www.sciencemuseum.org.uk/","events_url":"https://www.sciencemuseum.org.uk/see-and-do/lates","description":"Last Wednesday of each month, 6:30-10pm. Themed nights with interactive activities, quizzes, silent discos, experiments.","borough":"Kensington and Chelsea","category":"museum"},
+  {"id":61,"name":"National Portrait Gallery","homepage":"https://www.npg.org.uk/","events_url":"https://www.npg.org.uk/whatson","description":"Open late Fri-Sat until 9pm. Artist-led drawing classes, jazz nights, story tours.","borough":"Westminster","category":"museum"},
+  {"id":62,"name":"The Old Operating Theatre Museum","homepage":"https://oldoperatingtheatre.com/","events_url":"https://oldoperatingtheatre.com/events/","description":"Film screenings, secret concerts, quirky historical talks, Victorian surgical demonstrations. In a church attic.","borough":"Southwark","category":"museum"},
+  {"id":63,"name":"Mam Sham Supper Club","homepage":"https://www.mamsham.com/","events_url":"https://www.mamsham.com/","description":"Comedy-meets-culinary supper club. Three-course menus inspired by three comedy acts. Seats up to 200.","borough":null,"category":"supper club"},
+  {"id":64,"name":"Khao Suppers","homepage":null,"events_url":null,"description":"Monthly Gujarati supper club. Started in an East London home. Four-course menus of classic Gujarati dishes.","borough":"Hackney","category":"supper club"},
+  {"id":65,"name":"Dinner Ladies","homepage":null,"events_url":null,"description":"Sustainable supper clubs with Asian flex. Themed events including Wasted Supper \u2014 turning unwanted leftovers into delicious meals.","borough":null,"category":"supper club"},
+  {"id":66,"name":"Eleven98","homepage":null,"events_url":null,"description":"Hackney-sourced supper club. All produce from local area. Sustainability-first dinners.","borough":"Hackney","category":"supper club"},
+  {"id":67,"name":"Wimbledon BookFest","homepage":"https://www.wimbledonbookfest.org/","events_url":"https://www.wimbledonbookfest.org/","description":"London's leading literary festival. 15-25 October 2026. Year-round education programme. Partnership with Lahore Literary Festival.","borough":"Merton","category":"bookshop events"},
+  {"id":68,"name":"Lectures London","homepage":"https://lectures.london/","events_url":"https://lectures.london/","description":"Aggregator listing free lectures across London. Cities, AI, philosophy, history, science and more.","borough":null,"category":"lecture series"},
+  {"id":69,"name":"The RSA","homepage":"https://www.thersa.org/","events_url":"https://www.thersa.org/events","description":"Royal Society of Arts. Free public events, talks, and lectures on social change, innovation and creativity.","borough":"Westminster","category":"lecture series"},
+  {"id":70,"name":"Peckham Festival","homepage":"https://www.peckhamfestival.org/","events_url":"https://www.peckhamfestival.org/","description":"Free long weekend of art, performances, activities. Made in Peckham open studios. Art trail through warehouses and streets.","borough":"Southwark","category":"community space"},
+  {"id":71,"name":"London Gallery Weekend","homepage":"https://londongalleryweekend.art/","events_url":"https://londongalleryweekend.art/","description":"Free annual event with 130+ contemporary galleries. Talks, family activities, special events across London.","borough":null,"category":"gallery"},
+  {"id":72,"name":"Camden Fringe","homepage":"https://camdenfringe.com/","events_url":"https://camdenfringe.com/","description":"Annual fringe festival in August. Alternative to Edinburgh. Cheap tickets, new material in intimate venues.","borough":"Camden","category":"theatre"},
+  {"id":73,"name":"Ronnie Scott's","homepage":"https://www.ronniescotts.co.uk/","events_url":"https://www.ronniescotts.co.uk/performances","description":"Spiritual home of British jazz since 1959. Seven days a week, often two shows a night.","borough":"Westminster","category":"live music venue"},
+  {"id":74,"name":"Landmark Arts Centre","homepage":"https://www.landmarkartscentre.org/","events_url":"https://www.landmarkartscentre.org/","description":"Art exhibitions, workshops and live events in Teddington, SW London.","borough":"Richmond upon Thames","category":"cultural centre"},
+  {"id":75,"name":"Brady Arts & Community Centre","homepage":"https://www.thvenues.co.uk/venues/the-brady-arts-centre","events_url":"https://www.thvenues.co.uk/venues/the-brady-arts-centre","description":"Multi-purpose venue in Whitechapel near Brick Lane. Performances, exhibitions, rehearsals, workshops.","borough":"Tower Hamlets","category":"community space"},
+  {"id":76,"name":"Outernet London","homepage":"https://www.outernet.com/","events_url":"https://www.outernet.com/","description":"Free immersive experience at Tottenham Court Road. Part gallery, part digital art. Open until midnight some days.","borough":"Camden","category":"cultural centre"},
+  {"id":77,"name":"Eatwith London (formerly Grub Club)","homepage":"https://www.eatwith.com/l/grubclub","events_url":"https://www.eatwith.com/l/destinations/london/dinners","description":"Platform for supper clubs and alternative dining experiences with local chefs.","borough":null,"category":"supper club"},
+  {"id":78,"name":"Tate Britain","homepage":"https://www.tate.org.uk/visit/tate-britain","events_url":"https://www.tate.org.uk/whats-on?gallery=tate-britain","description":"Free British art collection. After-hours events every couple of months with sound, visuals, activities and discussions.","borough":"Westminster","category":"museum"},
+  {"id":79,"name":"Natural History Museum","homepage":"https://www.nhm.ac.uk/","events_url":"https://www.nhm.ac.uk/events.html","description":"Free museum with late night events including legendary silent disco starting at 10pm.","borough":"Kensington and Chelsea","category":"museum"},
+  {"id":80,"name":"ANNKA KULTYS Gallery","homepage":"https://www.annkakultys.com/","events_url":"https://www.annkakultys.com/","description":"Contemporary and digital art gallery on Hackney Road. Wheelchair accessible.","borough":"Hackney","category":"gallery"},
+  {"id":81,"name":"Oriole Bar","homepage":"https://www.oriolebar.com/","events_url":"https://www.oriolebar.com/oriole-music","description":"Live jazz, blues, and world music Wed-Sat in Covent Garden.","borough":"Westminster","category":"live music venue"},
+  {"id":82,"name":"Boisdale","homepage":"https://www.boisdale.co.uk/","events_url":"https://www.boisdale.co.uk/","description":"Jazz, soul and blues in Canary Wharf and Belgravia. Sunday blues brunch, Saturday soul lunches, live bands.","borough":"Tower Hamlets","category":"live music venue"}
+];
+
+// ============================================================
+// STATE — persisted to localStorage
+// ============================================================
+const STORAGE_KEY = 'lte_org_reviews';
+
+function loadState() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) return JSON.parse(saved);
+    // Initialize from seed
+    const state = {};
+    SEED_DATA.forEach(org => {
+        state[org.id] = {
+            status: 'pending',
+            notes: '',
+            events_url: org.events_url || '',
+            borough: org.borough || '',
+            category: org.category || '',
+        };
+    });
+    return state;
+}
+
+function saveState() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+let state = loadState();
+let currentMode = 'review';
+let currentFilter = 'pending';
+
+// ============================================================
+// STATS
+// ============================================================
+function getStats() {
+    const stats = { pending: 0, approved: 0, rejected: 0, maybe: 0, total: SEED_DATA.length };
+    SEED_DATA.forEach(org => {
+        const s = state[org.id]?.status || 'pending';
+        stats[s] = (stats[s] || 0) + 1;
+    });
+    return stats;
+}
+
+function renderStats() {
+    const stats = getStats();
+    document.getElementById('stats-bar').innerHTML = `
+        <span class="stat pending ${currentMode === 'list' && currentFilter === 'pending' ? 'active' : ''}"
+              onclick="showList('pending')">
+            Pending: <strong>${stats.pending}</strong>
+        </span>
+        <span class="stat approved ${currentMode === 'list' && currentFilter === 'approved' ? 'active' : ''}"
+              onclick="showList('approved')">
+            Approved: <strong>${stats.approved}</strong>
+        </span>
+        <span class="stat maybe ${currentMode === 'list' && currentFilter === 'maybe' ? 'active' : ''}"
+              onclick="showList('maybe')">
+            Maybe: <strong>${stats.maybe}</strong>
+        </span>
+        <span class="stat rejected ${currentMode === 'list' && currentFilter === 'rejected' ? 'active' : ''}"
+              onclick="showList('rejected')">
+            Rejected: <strong>${stats.rejected}</strong>
+        </span>
+        <span class="stat">Total: <strong>${stats.total}</strong></span>
+    `;
+}
+
+// ============================================================
+// TAB HANDLING
+// ============================================================
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const mode = tab.dataset.mode;
+        if (mode === 'review') {
+            currentMode = 'review';
+            renderReview();
+        } else {
+            currentMode = 'list';
+            currentFilter = tab.dataset.status;
+            renderList(currentFilter);
+        }
+        renderStats();
+    });
+});
+
+// ============================================================
+// REVIEW MODE
+// ============================================================
+function getPendingOrgs() {
+    return SEED_DATA.filter(org => (state[org.id]?.status || 'pending') === 'pending');
+}
+
+function renderReview() {
+    const pending = getPendingOrgs();
+    const main = document.getElementById('main');
+
+    if (pending.length === 0) {
+        const stats = getStats();
+        main.innerHTML = `
+            <div class="done-card">
+                <h2>All caught up!</h2>
+                <p style="color: #888; font-size: 16px; margin-bottom: 24px;">No more pending orgs to review.</p>
+                <div class="done-stats">
+                    <p>Approved: <strong style="color: #4ade80;">${stats.approved}</strong></p>
+                    <p>Maybe: <strong style="color: #fbbf24;">${stats.maybe}</strong></p>
+                    <p>Rejected: <strong style="color: #f87171;">${stats.rejected}</strong></p>
+                </div>
+                <div style="margin-top: 32px;">
+                    <button class="btn-export" onclick="exportApproved()">Export Approved JSON</button>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
+    const org = pending[0];
+    const s = state[org.id];
+    const remaining = pending.length - 1;
+
+    main.innerHTML = `
+        <div class="review-card">
+            <div class="review-header">
+                <h2>${esc(org.name)}</h2>
+                <div class="review-meta">
+                    ${s.borough ? `<span>${esc(s.borough)}</span>` : ''}
+                    ${s.category ? `<span>${esc(s.category)}</span>` : ''}
+                </div>
+            </div>
+
+            <div class="review-body">
+                ${org.description ? `<p>${esc(org.description)}</p>` : ''}
+
+                <div class="review-links">
+                    ${org.homepage ? `<a href="${esc(org.homepage)}" target="_blank" rel="noopener">Homepage</a>` : ''}
+                    ${s.events_url ? `<a href="${esc(s.events_url)}" target="_blank" rel="noopener">Events page</a>` : ''}
+                </div>
+
+                <div style="margin-top: 16px;">
+                    <div class="edit-row">
+                        <label>Events URL</label>
+                        <input class="edit-input" id="edit-events-url" value="${esc(s.events_url)}" placeholder="https://...">
+                    </div>
+                    <div class="edit-row">
+                        <label>Borough</label>
+                        <input class="edit-input" id="edit-borough" value="${esc(s.borough)}" placeholder="e.g. Hackney">
+                    </div>
+                    <div class="edit-row">
+                        <label>Category</label>
+                        <input class="edit-input" id="edit-category" value="${esc(s.category)}" placeholder="e.g. gallery">
+                    </div>
+                </div>
+
+                <textarea class="notes-input" id="edit-notes" rows="2" placeholder="Add notes (optional)...">${esc(s.notes)}</textarea>
+            </div>
+
+            <div class="review-actions">
+                <button class="btn btn-approve" onclick="decide(${org.id}, 'approved')">Approve</button>
+                <button class="btn btn-maybe" onclick="decide(${org.id}, 'maybe')">Maybe</button>
+                <button class="btn btn-reject" onclick="decide(${org.id}, 'rejected')">Reject</button>
+                <button class="btn btn-skip" onclick="renderReviewNext()">Skip</button>
+                <span class="remaining">${remaining} remaining</span>
+            </div>
+        </div>
+
+        <div class="shortcuts">
+            <span class="kbd">A</span> Approve
+            <span class="kbd">M</span> Maybe
+            <span class="kbd">R</span> Reject
+            <span class="kbd">S</span> Skip
+            <span class="kbd">E</span> Focus events URL
+        </div>
+    `;
+}
+
+let skipIndex = 0;
+
+function renderReviewNext() {
+    // Skip just re-renders, cycling to next pending org
+    const pending = getPendingOrgs();
+    if (pending.length <= 1) {
+        renderReview();
+        return;
+    }
+    // Move current to end by temporarily marking and unmarking
+    // Actually, simpler: just rotate the view
+    skipIndex = (skipIndex + 1) % pending.length;
+    const org = pending[skipIndex % pending.length];
+    // Just re-render — the pending list order doesn't change so skip
+    // doesn't really work with a simple filter. Let's just re-render.
+    renderReview();
+}
+
+function decide(orgId, status) {
+    // Save edits
+    const eventsUrl = document.getElementById('edit-events-url')?.value || '';
+    const borough = document.getElementById('edit-borough')?.value || '';
+    const category = document.getElementById('edit-category')?.value || '';
+    const notes = document.getElementById('edit-notes')?.value || '';
+
+    state[orgId] = {
+        ...state[orgId],
+        status,
+        events_url: eventsUrl,
+        borough,
+        category,
+        notes,
+    };
+    saveState();
+    renderStats();
+    renderReview();
+}
+
+// ============================================================
+// LIST MODE
+// ============================================================
+function renderList(filter) {
+    const main = document.getElementById('main');
+    let orgs = SEED_DATA;
+    if (filter !== 'all') {
+        orgs = orgs.filter(o => (state[o.id]?.status || 'pending') === filter);
+    }
+
+    if (orgs.length === 0) {
+        main.innerHTML = `<div class="empty"><p>No orgs with status "${filter}".</p></div>`;
+        return;
+    }
+
+    let rows = orgs.map(org => {
+        const s = state[org.id] || {};
+        const status = s.status || 'pending';
+        return `
+            <tr>
+                <td>
+                    <strong>${esc(org.name)}</strong>
+                    ${org.description ? `<br><span style="color:#888;font-size:12px;">${esc(org.description.substring(0, 100))}</span>` : ''}
+                </td>
+                <td style="font-size:13px;color:#aaa;">${esc(s.borough || org.borough || '\u2014')}</td>
+                <td style="font-size:13px;color:#aaa;">${esc(s.category || org.category || '\u2014')}</td>
+                <td style="font-size:12px;">
+                    ${org.homepage ? `<a href="${esc(org.homepage)}" target="_blank" rel="noopener">homepage</a>` : ''}
+                    ${s.events_url ? `<br><a href="${esc(s.events_url)}" target="_blank" rel="noopener">events</a>` : ''}
+                </td>
+                <td><span class="tag tag-${status}">${status}</span></td>
+                <td>
+                    <div class="actions-cell">
+                        <button class="btn btn-approve" onclick="quickStatus(${org.id},'approved')">Y</button>
+                        <button class="btn btn-maybe" onclick="quickStatus(${org.id},'maybe')">?</button>
+                        <button class="btn btn-reject" onclick="quickStatus(${org.id},'rejected')">N</button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    main.innerHTML = `
+        <table class="org-table">
+            <thead><tr>
+                <th>Name</th><th>Borough</th><th>Category</th><th>Links</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
+}
+
+function quickStatus(orgId, status) {
+    state[orgId] = { ...state[orgId], status };
+    saveState();
+    renderStats();
+    renderList(currentFilter);
+}
+
+// ============================================================
+// EXPORT
+// ============================================================
+function exportApproved() {
+    const approved = SEED_DATA
+        .filter(org => state[org.id]?.status === 'approved')
+        .map(org => {
+            const s = state[org.id];
+            return {
+                name: org.name,
+                homepage: org.homepage,
+                events_url: s.events_url || org.events_url,
+                description: org.description,
+                borough: s.borough || org.borough,
+                category: s.category || org.category,
+                notes: s.notes || undefined,
+            };
+        });
+
+    const blob = new Blob([JSON.stringify(approved, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'approved_orgs.json';
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function resetAll() {
+    if (!confirm('Reset all reviews? This cannot be undone.')) return;
+    localStorage.removeItem(STORAGE_KEY);
+    state = loadState();
+    renderStats();
+    if (currentMode === 'review') renderReview();
+    else renderList(currentFilter);
+}
+
+// ============================================================
+// KEYBOARD SHORTCUTS
+// ============================================================
+document.addEventListener('keydown', (e) => {
+    if (currentMode !== 'review') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    const pending = getPendingOrgs();
+    if (pending.length === 0) return;
+    const orgId = pending[0].id;
+
+    switch (e.key.toLowerCase()) {
+        case 'a': decide(orgId, 'approved'); break;
+        case 'r': decide(orgId, 'rejected'); break;
+        case 'm': decide(orgId, 'maybe'); break;
+        case 's': renderReviewNext(); break;
+        case 'e':
+            e.preventDefault();
+            document.getElementById('edit-events-url')?.focus();
+            break;
+    }
+});
+
+// ============================================================
+// UTILS
+// ============================================================
+function esc(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// ============================================================
+// INIT
+// ============================================================
+function showList(status) {
+    currentMode = 'list';
+    currentFilter = status;
+    document.querySelectorAll('.tab').forEach(t => {
+        t.classList.remove('active');
+        if (t.dataset.mode === 'list' && t.dataset.status === status) t.classList.add('active');
+    });
+    renderStats();
+    renderList(status);
+}
+
+renderStats();
+renderReview();
+</script>
+</body>
+</html>

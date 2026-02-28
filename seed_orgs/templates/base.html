@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Org Seeder{% endblock %}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            line-height: 1.5;
+        }
+        a { color: #7eb8ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .topbar {
+            background: #151515;
+            border-bottom: 1px solid #2a2a2a;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .topbar h1 { font-size: 16px; font-weight: 600; color: #fff; }
+        .stats {
+            display: flex;
+            gap: 16px;
+            font-size: 13px;
+        }
+        .stat { color: #888; }
+        .stat strong { color: #e0e0e0; }
+        .stat.approved strong { color: #4ade80; }
+        .stat.rejected strong { color: #f87171; }
+        .stat.maybe strong { color: #fbbf24; }
+        .stat.pending strong { color: #7eb8ff; }
+
+        nav {
+            background: #151515;
+            border-bottom: 1px solid #2a2a2a;
+            padding: 8px 24px;
+            display: flex;
+            gap: 8px;
+        }
+        nav a {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #aaa;
+            transition: all 0.15s;
+        }
+        nav a:hover { background: #222; color: #fff; text-decoration: none; }
+        nav a.active { background: #2a2a2a; color: #fff; }
+
+        .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn-approve { background: #166534; color: #4ade80; }
+        .btn-approve:hover { background: #15803d; }
+        .btn-reject { background: #7f1d1d; color: #f87171; }
+        .btn-reject:hover { background: #991b1b; }
+        .btn-maybe { background: #713f12; color: #fbbf24; }
+        .btn-maybe:hover { background: #854d0e; }
+        .btn-skip { background: #1e1e1e; color: #888; }
+        .btn-skip:hover { background: #2a2a2a; color: #ccc; }
+
+        .kbd {
+            display: inline-block;
+            padding: 2px 6px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: monospace;
+            color: #aaa;
+            background: #1a1a1a;
+        }
+
+        {% block extra_css %}{% endblock %}
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <h1>London Tasteful Events — Org Seeder</h1>
+        <div class="stats">
+            <span class="stat pending">Pending: <strong>{{ stats.get('pending', 0) }}</strong></span>
+            <span class="stat approved">Approved: <strong>{{ stats.get('approved', 0) }}</strong></span>
+            <span class="stat maybe">Maybe: <strong>{{ stats.get('maybe', 0) }}</strong></span>
+            <span class="stat rejected">Rejected: <strong>{{ stats.get('rejected', 0) }}</strong></span>
+            <span class="stat">Total: <strong>{{ stats.get('total', 0) }}</strong></span>
+        </div>
+    </div>
+    <nav>
+        <a href="/review">Review Mode</a>
+        <a href="/?status=pending" {% if current_status == 'pending' %}class="active"{% endif %}>Pending</a>
+        <a href="/?status=approved" {% if current_status == 'approved' %}class="active"{% endif %}>Approved</a>
+        <a href="/?status=maybe" {% if current_status == 'maybe' %}class="active"{% endif %}>Maybe</a>
+        <a href="/?status=rejected" {% if current_status == 'rejected' %}class="active"{% endif %}>Rejected</a>
+        <a href="/?status=all" {% if current_status == 'all' %}class="active"{% endif %}>All</a>
+        <a href="/export">Export JSON</a>
+    </nav>
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
