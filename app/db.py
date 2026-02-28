@@ -980,6 +980,25 @@ def get_latest_discovery_run() -> dict[str, Any] | None:
     return _decode_discovery_row(dict(row))
 
 
+def get_latest_running_discovery_run() -> dict[str, Any] | None:
+    with get_db() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT *
+                FROM discovery_runs
+                WHERE status = 'running' AND finished_at IS NULL
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+
+    if not row:
+        return None
+    return _decode_discovery_row(dict(row))
+
+
 def get_discovery_runs(limit: int = 10) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(

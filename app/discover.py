@@ -20,7 +20,7 @@ import json
 import os
 import re
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
@@ -30,9 +30,9 @@ from bs4 import BeautifulSoup
 from app.db import (
     add_strategy,
     finish_discovery_run,
+    get_latest_running_discovery_run,
     get_stats,
     get_strategies,
-    has_recent_running_discovery,
     init_db,
     start_discovery_run,
     upsert_org,
@@ -780,6 +780,21 @@ def _env_int(key: str, fallback: int) -> int:
         return fallback
 
 
+def _parse_discovery_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    if isinstance(value, str) and value:
+        normalized = value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
 def run_discovery_cycle(
     *,
     trigger: str = "scheduled",
@@ -799,17 +814,56 @@ def run_discovery_cycle(
     max_results_per_query = max_results_per_query or _env_int("DISCOVERY_MAX_RESULTS_PER_QUERY", 8)
     max_candidates = max_candidates or _env_int("DISCOVERY_MAX_CANDIDATES", 60)
     request_timeout = request_timeout or _env_int("DISCOVERY_REQUEST_TIMEOUT", 12)
+    lock_window_minutes = _env_int("DISCOVERY_RUN_LOCK_MINUTES", 90)
+    manual_unlock_minutes = _env_int("DISCOVERY_MANUAL_UNLOCK_MINUTES", 5)
 
-    if has_recent_running_discovery(max_age_minutes=_env_int("DISCOVERY_RUN_LOCK_MINUTES", 90)):
-        return {
-            "status": "skipped",
-            "reason": "another discovery run is still active",
-            "query_count": 0,
-            "searched_url_count": 0,
-            "candidate_count": 0,
-            "upserted_count": 0,
-            "query_errors": 0,
-        }
+    running = get_latest_running_discovery_run()
+    if running:
+        started_at = _parse_discovery_dt(running.get("started_at"))
+        age_minutes = None
+        if started_at:
+            age_minutes = int((datetime.now(timezone.utc) - started_at).total_seconds() // 60)
+
+        is_within_lock = age_minutes is None or age_minutes < lock_window_minutes
+        if is_within_lock:
+            can_manual_unlock = trigger == "manual" and age_minutes is not None and age_minutes >= manual_unlock_minutes
+            if can_manual_unlock:
+                finish_discovery_run(
+                    run_id=int(running["id"]),
+                    status="failed",
+                    result_count=int(running.get("result_count") or 0),
+                    upserted_count=int(running.get("upserted_count") or 0),
+                    error=f"Marked stale by manual retry after {age_minutes} minutes",
+                    details={
+                        "status": "failed",
+                        "reason": "stale_lock_cleared_by_manual_retry",
+                        "age_minutes": age_minutes,
+                    },
+                )
+            else:
+                return {
+                    "status": "skipped",
+                    "reason": "another discovery run is still active",
+                    "query_count": 0,
+                    "searched_url_count": 0,
+                    "candidate_count": 0,
+                    "upserted_count": 0,
+                    "query_errors": 0,
+                }
+        else:
+            finish_discovery_run(
+                run_id=int(running["id"]),
+                status="failed",
+                result_count=int(running.get("result_count") or 0),
+                upserted_count=int(running.get("upserted_count") or 0),
+                error=f"Marked stale after lock timeout ({lock_window_minutes} minutes)",
+                details={
+                    "status": "failed",
+                    "reason": "stale_lock_timeout",
+                    "lock_window_minutes": lock_window_minutes,
+                    "age_minutes": age_minutes,
+                },
+            )
 
     boroughs = [borough] if borough else None
     categories = [category] if category else None
