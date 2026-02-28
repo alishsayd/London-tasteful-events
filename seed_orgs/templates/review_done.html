@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Review Complete{% endblock %}
+
+{% block content %}
+<div style="text-align: center; padding: 80px 0;">
+    <h2 style="color: #4ade80; font-size: 24px; margin-bottom: 16px;">All caught up!</h2>
+    <p style="color: #888; font-size: 16px; margin-bottom: 24px;">
+        No more pending orgs to review.
+    </p>
+    <div style="font-size: 14px; color: #666; line-height: 2;">
+        <p>Approved: <strong style="color: #4ade80;">{{ stats.get('approved', 0) }}</strong></p>
+        <p>Maybe: <strong style="color: #fbbf24;">{{ stats.get('maybe', 0) }}</strong></p>
+        <p>Rejected: <strong style="color: #f87171;">{{ stats.get('rejected', 0) }}</strong></p>
+    </div>
+    <div style="margin-top: 32px;">
+        <a href="/?status=maybe" style="margin-right: 16px;">Review maybes</a>
+        <a href="/export">Export approved orgs</a>
+    </div>
+</div>
+{% endblock %}

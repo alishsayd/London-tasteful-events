@@ -1,0 +1,658 @@
+[
+  {
+    "name": "South London Gallery",
+    "homepage": "https://www.southlondongallery.org/",
+    "events_url": "https://www.southlondongallery.org/whats-on/",
+    "description": "Free contemporary art exhibitions, artist talks, film screenings, performances, supper clubs, zine fairs. Open late Wednesdays until 9pm.",
+    "borough": "Southwark",
+    "category": "gallery"
+  },
+  {
+    "name": "Autograph",
+    "homepage": "https://autograph.org.uk/",
+    "events_url": "https://autograph.org.uk/exhibitions",
+    "description": "Free photography exhibitions exploring race, identity, representation and social justice. Based in Hackney since 1988.",
+    "borough": "Hackney",
+    "category": "gallery"
+  },
+  {
+    "name": "Whitechapel Gallery",
+    "homepage": "https://www.whitechapelgallery.org/",
+    "events_url": "https://www.whitechapelgallery.org/exhibitions/",
+    "description": "Major contemporary art gallery. Free exhibitions on Thursday nights until 9pm. First Thursdays celebrations with curated East London art recommendations.",
+    "borough": "Tower Hamlets",
+    "category": "gallery"
+  },
+  {
+    "name": "ICA (Institute of Contemporary Arts)",
+    "homepage": "https://www.ica.art/",
+    "events_url": "https://www.ica.art/whats-on",
+    "description": "Contemporary arts centre on The Mall. Open until 11pm Tue-Sun. Film, exhibitions, talks, music and performances.",
+    "borough": "Westminster",
+    "category": "gallery"
+  },
+  {
+    "name": "Barbican Centre",
+    "homepage": "https://www.barbican.org.uk/",
+    "events_url": "https://www.barbican.org.uk/whats-on",
+    "description": "Major arts centre with gallery, cinema, theatre, concert hall. Gallery open late Thu-Sat until 8pm. Free foyer exhibitions and events.",
+    "borough": "City of London",
+    "category": "cultural centre"
+  },
+  {
+    "name": "The Castle Cinema",
+    "homepage": "https://thecastlecinema.com/",
+    "events_url": "https://thecastlecinema.com/",
+    "description": "Independent crowdfunded community cinema in Hackney. Pay What You Can screenings. Member-shaped programming.",
+    "borough": "Hackney",
+    "category": "community cinema"
+  },
+  {
+    "name": "The Lexi Cinema",
+    "homepage": "https://thelexicinema.co.uk/",
+    "events_url": "https://thelexicinema.co.uk/",
+    "description": "Volunteer-run independent cinema in Kensal Rise. 100% distributable profits go to charity.",
+    "borough": "Brent",
+    "category": "community cinema"
+  },
+  {
+    "name": "Rio Cinema",
+    "homepage": "https://riocinema.org.uk/",
+    "events_url": "https://riocinema.org.uk/",
+    "description": "London's oldest community-run cinema in Dalston. Film festivals including Kurdish Film Festival, Fringe! Queer Film & Arts Fest, Doc'n Roll.",
+    "borough": "Hackney",
+    "category": "community cinema"
+  },
+  {
+    "name": "Genesis Cinema",
+    "homepage": "https://www.genesiscinema.co.uk/",
+    "events_url": "https://www.genesiscinema.co.uk/",
+    "description": "Cultural hub in Whitechapel. Affordable films plus live music, poetry nights, swing events, festivals and community programming.",
+    "borough": "Tower Hamlets",
+    "category": "community cinema"
+  },
+  {
+    "name": "The Garden Cinema",
+    "homepage": "https://www.thegardencinema.co.uk/",
+    "events_url": "https://www.thegardencinema.co.uk/",
+    "description": "Intimate two-screen cinema in Covent Garden. Bi-weekly free screenings for members. Bar events.",
+    "borough": "Camden",
+    "category": "community cinema"
+  },
+  {
+    "name": "Rich Mix",
+    "homepage": "https://richmix.org.uk/",
+    "events_url": "https://richmix.org.uk/whats-on/",
+    "description": "Community arts space in Shoreditch. Three cinema screens, spoken word, theatre, live music. Three bars.",
+    "borough": "Tower Hamlets",
+    "category": "cultural centre"
+  },
+  {
+    "name": "ArtHouse Crouch End",
+    "homepage": "https://www.arthousecrouchend.co.uk/",
+    "events_url": "https://www.arthousecrouchend.co.uk/whats-on/",
+    "description": "Cinema, art, live music, theatre, dance, workshops, comedy. Community-focused arts venue. Tickets from £7.",
+    "borough": "Haringey",
+    "category": "community cinema"
+  },
+  {
+    "name": "The Phoenix Cinema",
+    "homepage": "https://www.phoenixcinema.co.uk/",
+    "events_url": "https://www.phoenixcinema.co.uk/",
+    "description": "London's longest-running cinema, open since 1910. Independent not-for-profit single-screen cinema owned by charitable trust.",
+    "borough": "Barnet",
+    "category": "community cinema"
+  },
+  {
+    "name": "Prince Charles Cinema",
+    "homepage": "https://princecharlescinema.com/",
+    "events_url": "https://princecharlescinema.com/",
+    "description": "Cult cinema in Leicester Square. Movie marathons, £2.50 member tickets, sing-a-long screenings, event nights.",
+    "borough": "Westminster",
+    "category": "community cinema"
+  },
+  {
+    "name": "BFI Southbank",
+    "homepage": "https://www.bfi.org.uk/bfi-southbank",
+    "events_url": "https://whatson.bfi.org.uk/Online/",
+    "description": "Four screens showing classic, independent and world cinema. Free BFI Mediatheque with hundreds of archive titles.",
+    "borough": "Lambeth",
+    "category": "community cinema"
+  },
+  {
+    "name": "Gresham College",
+    "homepage": "https://www.gresham.ac.uk/",
+    "events_url": "https://www.gresham.ac.uk/whats-on",
+    "description": "Over 100 free public lectures per year on astronomy, medicine, history, politics, law and more. Based in Holborn.",
+    "borough": "Camden",
+    "category": "lecture series"
+  },
+  {
+    "name": "Conway Hall",
+    "homepage": "https://conwayhall.org.uk/",
+    "events_url": "https://conwayhall.org.uk/whats-on/",
+    "description": "Home of the Ethical Society. Free speech platform with London Thinks debates, talks on social, political and cultural topics.",
+    "borough": "Camden",
+    "category": "lecture series"
+  },
+  {
+    "name": "LSE Public Events",
+    "homepage": "https://www.lse.ac.uk/events",
+    "events_url": "https://www.lse.ac.uk/events",
+    "description": "Free public lecture programme with podcasts. Searchable by topic and speaker. Open to all.",
+    "borough": "Westminster",
+    "category": "lecture series"
+  },
+  {
+    "name": "Royal Institute of Philosophy",
+    "homepage": "https://royalinstitutephilosophy.org/",
+    "events_url": "https://royalinstitutephilosophy.org/philosophy-events/",
+    "description": "Free public annual lecture series. Centenary series 2025/26: Philosophy in Retrospect and Prospect.",
+    "borough": "Camden",
+    "category": "lecture series"
+  },
+  {
+    "name": "Intelligence Squared",
+    "homepage": "https://www.intelligencesquared.com/",
+    "events_url": "https://www.intelligencesquared.com/events/",
+    "description": "Debates, talks and discussions in politics, economics, history, science and culture. Venues include Union Chapel and Barbican.",
+    "borough": "Islington",
+    "category": "lecture series"
+  },
+  {
+    "name": "How to Academy",
+    "homepage": "https://www.howtoacademy.com/",
+    "events_url": "https://www.howtoacademy.com/events",
+    "description": "Talks from thinkers, artists, scientists, entrepreneurs. Venues include Art Workers Guild in Bloomsbury and Barbican Hall.",
+    "borough": "Camden",
+    "category": "lecture series"
+  },
+  {
+    "name": "London Review Bookshop",
+    "homepage": "https://www.londonreviewbookshop.co.uk/",
+    "events_url": "https://www.londonreviewbookshop.co.uk/events",
+    "description": "Author talks, readings, film screenings, debates about literature, history and politics. Events twice weekly.",
+    "borough": "Camden",
+    "category": "bookshop events"
+  },
+  {
+    "name": "Foyles",
+    "homepage": "https://www.foyles.co.uk/",
+    "events_url": "https://www.foyles.co.uk/events",
+    "description": "Major independent bookshop on Charing Cross Road. Regular author conversations, panel discussions, literary talks.",
+    "borough": "Westminster",
+    "category": "bookshop events"
+  },
+  {
+    "name": "Lala Books",
+    "homepage": "https://www.lalabooks.london/",
+    "events_url": "https://www.lalabooks.london/whats-on",
+    "description": "Independent bookshop hosting poetry nights, author readings, literary events. Rooted in local community.",
+    "borough": "Hackney",
+    "category": "bookshop events"
+  },
+  {
+    "name": "Burley Fisher Books",
+    "homepage": "https://burleyfisherbooks.com/",
+    "events_url": "https://burleyfisherbooks.com/pages/events",
+    "description": "Independent bookshop in Dalston. Finalist for Independent Bookshop of the Year 2026. Regular events.",
+    "borough": "Hackney",
+    "category": "bookshop events"
+  },
+  {
+    "name": "Backstory Books",
+    "homepage": "https://www.backstorybooks.com/",
+    "events_url": "https://www.backstorybooks.com/events",
+    "description": "Independent bookshop in Balham. Three-time consecutive finalist for Bookshop of the Year. Author events and discussions.",
+    "borough": "Wandsworth",
+    "category": "bookshop events"
+  },
+  {
+    "name": "Bàrd Books",
+    "homepage": "https://www.bardbooks.co.uk/",
+    "events_url": "https://www.bardbooks.co.uk/",
+    "description": "Independent bookshop on Roman Road. Two-time shortlisted for Bookshop of the Year.",
+    "borough": "Tower Hamlets",
+    "category": "bookshop events"
+  },
+  {
+    "name": "BookBar",
+    "homepage": "https://www.bookbar.co.uk/",
+    "events_url": "https://www.bookbar.co.uk/",
+    "description": "Bookshop-bar with outposts in Chelsea and Islington. Finalist for Independent Bookshop of the Year 2026.",
+    "borough": "Islington",
+    "category": "bookshop events"
+  },
+  {
+    "name": "The Albany",
+    "homepage": "https://www.thealbany.org.uk/",
+    "events_url": "https://www.thealbany.org.uk/whats-on/",
+    "description": "SE London's leading arts centre in Deptford. Community collaboration, artist development. Youth takeovers, over-65s arts club.",
+    "borough": "Lewisham",
+    "category": "cultural centre"
+  },
+  {
+    "name": "Bernie Grant Arts Centre",
+    "homepage": "https://www.berniegrantcentre.co.uk/",
+    "events_url": "https://www.berniegrantcentre.co.uk/whats-on/",
+    "description": "£15m multi-arts centre in Tottenham. 274-seat auditorium, studio, café/bar, enterprise centre.",
+    "borough": "Haringey",
+    "category": "cultural centre"
+  },
+  {
+    "name": "Battersea Arts Centre",
+    "homepage": "https://bac.org.uk/",
+    "events_url": "https://bac.org.uk/whats-on/",
+    "description": "Home for radical theatre, workspace. Near Clapham Junction. Known for innovative community programming.",
+    "borough": "Wandsworth",
+    "category": "cultural centre"
+  },
+  {
+    "name": "Old Diorama Arts Centre",
+    "homepage": "https://olddiorama.com/",
+    "events_url": "https://olddiorama.com/",
+    "description": "Euston's centre for artistic creation and community action. Home to creative organisations and artists.",
+    "borough": "Camden",
+    "category": "cultural centre"
+  },
+  {
+    "name": "The Space",
+    "homepage": "https://space.org.uk/",
+    "events_url": "https://space.org.uk/whats-on/",
+    "description": "Performing arts centre in a converted church on the Isle of Dogs. Arts, events and workshops.",
+    "borough": "Tower Hamlets",
+    "category": "cultural centre"
+  },
+  {
+    "name": "Second Wave Youth Arts",
+    "homepage": "https://secondwave.org.uk/",
+    "events_url": "https://secondwave.org.uk/",
+    "description": "Free youth arts programmes for ages 11-25 in Deptford. Drama, songwriting, music, film, photography.",
+    "borough": "Lewisham",
+    "category": "cultural centre"
+  },
+  {
+    "name": "Brixton House",
+    "homepage": "https://brixtonhouse.co.uk/",
+    "events_url": "https://brixtonhouse.co.uk/whats-on/",
+    "description": "Formerly Ovalhouse Theatre. Theatre, dance, live art in Brixton. Focus on new work and diverse voices.",
+    "borough": "Lambeth",
+    "category": "theatre"
+  },
+  {
+    "name": "London Hackspace",
+    "homepage": "https://london.hackspace.org.uk/",
+    "events_url": "https://london.hackspace.org.uk/",
+    "description": "Non-profit community-run workshop. 3D printing, laser cutting, electronics, metalwork. Open Wednesday evenings.",
+    "borough": "Tower Hamlets",
+    "category": "makers space"
+  },
+  {
+    "name": "South London Makerspace",
+    "homepage": "https://southlondonmakerspace.org/",
+    "events_url": "https://southlondonmakerspace.org/",
+    "description": "Community workshop in Herne Hill. Laser cutter, screenprinting, 3D printing, ceramics. Member-run, volunteer basis.",
+    "borough": "Lambeth",
+    "category": "makers space"
+  },
+  {
+    "name": "Makerversity",
+    "homepage": "https://www.makerversity.org/",
+    "events_url": "https://www.makerversity.org/",
+    "description": "Maker community in Somerset House. Wednesday breakfasts, members bar, discounted exhibitions and events.",
+    "borough": "Westminster",
+    "category": "makers space"
+  },
+  {
+    "name": "Blackhorse Workshop",
+    "homepage": "https://www.blackhorseworkshop.co.uk/",
+    "events_url": "https://www.blackhorseworkshop.co.uk/",
+    "description": "Public resource workshop for making, mending and DIY. Space for the creative community with tools and technical support.",
+    "borough": "Waltham Forest",
+    "category": "makers space"
+  },
+  {
+    "name": "London Sculpture Workshop",
+    "homepage": "https://londonsculptureworkshop.org/",
+    "events_url": "https://londonsculptureworkshop.org/",
+    "description": "London's first open access sculpture workshop. Metal, wood, mould-making, ceramics. Not-for-profit community interest company.",
+    "borough": "Hackney",
+    "category": "makers space"
+  },
+  {
+    "name": "Apples and Snakes (Jawdance)",
+    "homepage": "https://applesandsnakes.org/",
+    "events_url": "https://applesandsnakes.org/event/jawdance/",
+    "description": "London's warmest spoken word and open mic night. Free to attend. Supportive space for all voices.",
+    "borough": "Hackney",
+    "category": "poetry readings"
+  },
+  {
+    "name": "Hidden Literature (MY WORD!)",
+    "homepage": "https://hiddenliterature.com/",
+    "events_url": "https://hiddenliterature.com/london-poetry-open-mic/",
+    "description": "Open mic night at Grow Hackney. Spoken word, poetry, hip-hop, R&B, neo-soul. Welcoming to first-timers.",
+    "borough": "Hackney",
+    "category": "poetry readings"
+  },
+  {
+    "name": "Grow Hackney",
+    "homepage": "https://www.growhackney.co.uk/",
+    "events_url": "https://www.growhackney.co.uk/events-calendar/",
+    "description": "Community venue hosting poetry, music, and cultural events in Hackney.",
+    "borough": "Hackney",
+    "category": "community space"
+  },
+  {
+    "name": "Green Note",
+    "homepage": "https://www.greennote.co.uk/",
+    "events_url": "https://www.greennote.co.uk/",
+    "description": "Award-winning intimate live music venue and vegetarian café-bar in Camden. Folk, Americana, blues, jazz, world music every night.",
+    "borough": "Camden",
+    "category": "live music venue"
+  },
+  {
+    "name": "Cafe Oto",
+    "homepage": "https://www.cafeoto.co.uk/",
+    "events_url": "https://www.cafeoto.co.uk/events/",
+    "description": "Experimental and avant-garde music in Dalston. Free jazz, improvisation, sound art. The weirdest and most creative sounds in London.",
+    "borough": "Hackney",
+    "category": "live music venue"
+  },
+  {
+    "name": "The Lexington",
+    "homepage": "https://thelexington.co.uk/",
+    "events_url": "https://thelexington.co.uk/",
+    "description": "Bastion of independent music between King's Cross and Angel since 2008. Gigs, pop quizzes, events.",
+    "borough": "Islington",
+    "category": "live music venue"
+  },
+  {
+    "name": "Union Chapel",
+    "homepage": "https://unionchapel.org.uk/",
+    "events_url": "https://unionchapel.org.uk/whats-on/",
+    "description": "Working church and stunningly beautiful live music venue in Highbury & Islington.",
+    "borough": "Islington",
+    "category": "live music venue"
+  },
+  {
+    "name": "The Bull's Head (Barnes)",
+    "homepage": "https://www.thebullsheadbarnes.com/",
+    "events_url": "https://www.thebullsheadbarnes.com/",
+    "description": "Live music seven days a week for over 60 years. Iconic Jazz Room in Barnes.",
+    "borough": "Richmond upon Thames",
+    "category": "live music venue"
+  },
+  {
+    "name": "Moth Club",
+    "homepage": "https://mothclub.co.uk/",
+    "events_url": "https://mothclub.co.uk/",
+    "description": "Former servicemen's club in Hackney. Intimate gigs. Secret shows from Lady Gaga, Foo Fighters and more.",
+    "borough": "Hackney",
+    "category": "live music venue"
+  },
+  {
+    "name": "The Cockpit",
+    "homepage": "https://thecockpit.org.uk/",
+    "events_url": "https://thecockpit.org.uk/",
+    "description": "Small flexible fringe venue in Marylebone. Music, comedy, dance, and theatre.",
+    "borough": "Westminster",
+    "category": "theatre"
+  },
+  {
+    "name": "Bread and Roses Theatre",
+    "homepage": "https://www.breadandrosestheatre.co.uk/",
+    "events_url": "https://www.breadandrosestheatre.co.uk/whats-on",
+    "description": "Consistent powerhouse of the South London fringe. Under 100 seats. New work focus.",
+    "borough": "Lambeth",
+    "category": "theatre"
+  },
+  {
+    "name": "Hen and Chickens Theatre",
+    "homepage": "https://www.henandchickens.com/",
+    "events_url": "https://www.henandchickens.com/",
+    "description": "Jewel of North London fringe. Pub theatre above a bar. Home to Unrestricted View.",
+    "borough": "Islington",
+    "category": "theatre"
+  },
+  {
+    "name": "Lion and Unicorn Theatre",
+    "homepage": "https://www.lionandunicorntheatre.com/",
+    "events_url": "https://www.lionandunicorntheatre.com/",
+    "description": "Black-box space above a Kentish Town pub. Daring, experimental work. Run by Proforca Theatre Company.",
+    "borough": "Camden",
+    "category": "theatre"
+  },
+  {
+    "name": "The Finborough Theatre",
+    "homepage": "https://www.finboroughtheatre.co.uk/",
+    "events_url": "https://www.finboroughtheatre.co.uk/",
+    "description": "Pioneering West London fringe theatre. Known for discovering new talent. Running since 1980.",
+    "borough": "Kensington and Chelsea",
+    "category": "theatre"
+  },
+  {
+    "name": "Pleasance Theatre",
+    "homepage": "https://www.pleasance.co.uk/islington",
+    "events_url": "https://www.pleasance.co.uk/islington",
+    "description": "One of the most exciting fringe theatres in London since 1995. Two spaces: Mainhouse (230) and Stagespace (54).",
+    "borough": "Islington",
+    "category": "theatre"
+  },
+  {
+    "name": "Blue Elephant Theatre",
+    "homepage": "https://www.blueelephanttheatre.co.uk/",
+    "events_url": "https://www.blueelephanttheatre.co.uk/",
+    "description": "Fully wheelchair accessible fringe theatre in Camberwell.",
+    "borough": "Southwark",
+    "category": "theatre"
+  },
+  {
+    "name": "Half Moon Theatre",
+    "homepage": "https://www.halfmoon.org.uk/",
+    "events_url": "https://www.halfmoon.org.uk/whats-on/",
+    "description": "UK's leading small-scale young people's venue and touring company. Based in Limehouse, East London.",
+    "borough": "Tower Hamlets",
+    "category": "theatre"
+  },
+  {
+    "name": "Greenwich Theatre",
+    "homepage": "https://www.greenwichtheatre.org.uk/",
+    "events_url": "https://www.greenwichtheatre.org.uk/whats-on/",
+    "description": "Theatre in Greenwich, near the DLR and mainline station. Mix of professional and community programming.",
+    "borough": "Greenwich",
+    "category": "theatre"
+  },
+  {
+    "name": "Tate Modern",
+    "homepage": "https://www.tate.org.uk/visit/tate-modern",
+    "events_url": "https://www.tate.org.uk/whats-on?gallery=tate-modern",
+    "description": "Free contemporary art. Tate Lates: art, music, film, talks and workshops until 10pm on select Fridays.",
+    "borough": "Southwark",
+    "category": "museum"
+  },
+  {
+    "name": "Science Museum Lates",
+    "homepage": "https://www.sciencemuseum.org.uk/",
+    "events_url": "https://www.sciencemuseum.org.uk/see-and-do/lates",
+    "description": "Last Wednesday of each month, 6:30-10pm. Themed nights with interactive activities, quizzes, silent discos, experiments.",
+    "borough": "Kensington and Chelsea",
+    "category": "museum"
+  },
+  {
+    "name": "National Portrait Gallery",
+    "homepage": "https://www.npg.org.uk/",
+    "events_url": "https://www.npg.org.uk/whatson",
+    "description": "Open late Fri-Sat until 9pm. Artist-led drawing classes, jazz nights, story tours.",
+    "borough": "Westminster",
+    "category": "museum"
+  },
+  {
+    "name": "The Old Operating Theatre Museum",
+    "homepage": "https://oldoperatingtheatre.com/",
+    "events_url": "https://oldoperatingtheatre.com/events/",
+    "description": "Film screenings, secret concerts, quirky historical talks, Victorian surgical demonstrations. In a church attic.",
+    "borough": "Southwark",
+    "category": "museum"
+  },
+  {
+    "name": "Mam Sham Supper Club",
+    "homepage": "https://www.mamsham.com/",
+    "events_url": "https://www.mamsham.com/",
+    "description": "Comedy-meets-culinary supper club. Three-course menus inspired by three comedy acts. Seats up to 200.",
+    "borough": null,
+    "category": "supper club"
+  },
+  {
+    "name": "Khao Suppers",
+    "homepage": null,
+    "events_url": null,
+    "description": "Monthly Gujarati supper club. Started in an East London home. Four-course menus of classic Gujarati dishes.",
+    "borough": "Hackney",
+    "category": "supper club"
+  },
+  {
+    "name": "Dinner Ladies",
+    "homepage": null,
+    "events_url": null,
+    "description": "Sustainable supper clubs with Asian flex. Themed events including Wasted Supper — turning unwanted leftovers into delicious meals.",
+    "borough": null,
+    "category": "supper club"
+  },
+  {
+    "name": "Eleven98",
+    "homepage": null,
+    "events_url": null,
+    "description": "Hackney-sourced supper club. All produce from local area. Sustainability-first dinners.",
+    "borough": "Hackney",
+    "category": "supper club"
+  },
+  {
+    "name": "Wimbledon BookFest",
+    "homepage": "https://www.wimbledonbookfest.org/",
+    "events_url": "https://www.wimbledonbookfest.org/",
+    "description": "London's leading literary festival. 15-25 October 2026. Year-round education programme. Partnership with Lahore Literary Festival.",
+    "borough": "Merton",
+    "category": "bookshop events"
+  },
+  {
+    "name": "Lectures London",
+    "homepage": "https://lectures.london/",
+    "events_url": "https://lectures.london/",
+    "description": "Aggregator listing free lectures across London. Cities, AI, philosophy, history, science and more.",
+    "borough": null,
+    "category": "lecture series"
+  },
+  {
+    "name": "The RSA",
+    "homepage": "https://www.thersa.org/",
+    "events_url": "https://www.thersa.org/events",
+    "description": "Royal Society of Arts. Free public events, talks, and lectures on social change, innovation and creativity.",
+    "borough": "Westminster",
+    "category": "lecture series"
+  },
+  {
+    "name": "Peckham Festival",
+    "homepage": "https://www.peckhamfestival.org/",
+    "events_url": "https://www.peckhamfestival.org/",
+    "description": "Free long weekend of art, performances, activities. Made in Peckham open studios. Art trail through warehouses and streets.",
+    "borough": "Southwark",
+    "category": "community space"
+  },
+  {
+    "name": "London Gallery Weekend",
+    "homepage": "https://londongalleryweekend.art/",
+    "events_url": "https://londongalleryweekend.art/",
+    "description": "Free annual event with 130+ contemporary galleries. Talks, family activities, special events across London.",
+    "borough": null,
+    "category": "gallery"
+  },
+  {
+    "name": "Camden Fringe",
+    "homepage": "https://camdenfringe.com/",
+    "events_url": "https://camdenfringe.com/",
+    "description": "Annual fringe festival in August. Alternative to Edinburgh. Cheap tickets, new material in intimate venues.",
+    "borough": "Camden",
+    "category": "theatre"
+  },
+  {
+    "name": "Ronnie Scott's",
+    "homepage": "https://www.ronniescotts.co.uk/",
+    "events_url": "https://www.ronniescotts.co.uk/performances",
+    "description": "Spiritual home of British jazz since 1959. Seven days a week, often two shows a night.",
+    "borough": "Westminster",
+    "category": "live music venue"
+  },
+  {
+    "name": "Landmark Arts Centre",
+    "homepage": "https://www.landmarkartscentre.org/",
+    "events_url": "https://www.landmarkartscentre.org/",
+    "description": "Art exhibitions, workshops and live events in Teddington, SW London.",
+    "borough": "Richmond upon Thames",
+    "category": "cultural centre"
+  },
+  {
+    "name": "Brady Arts & Community Centre",
+    "homepage": "https://www.thvenues.co.uk/venues/the-brady-arts-centre",
+    "events_url": "https://www.thvenues.co.uk/venues/the-brady-arts-centre",
+    "description": "Multi-purpose venue in Whitechapel near Brick Lane. Performances, exhibitions, rehearsals, workshops.",
+    "borough": "Tower Hamlets",
+    "category": "community space"
+  },
+  {
+    "name": "Outernet London",
+    "homepage": "https://www.outernet.com/",
+    "events_url": "https://www.outernet.com/",
+    "description": "Free immersive experience at Tottenham Court Road. Part gallery, part digital art. Open until midnight some days.",
+    "borough": "Camden",
+    "category": "cultural centre"
+  },
+  {
+    "name": "Eatwith London (formerly Grub Club)",
+    "homepage": "https://www.eatwith.com/l/grubclub",
+    "events_url": "https://www.eatwith.com/l/destinations/london/dinners",
+    "description": "Platform for supper clubs and alternative dining experiences with local chefs.",
+    "borough": null,
+    "category": "supper club"
+  },
+  {
+    "name": "Tate Britain",
+    "homepage": "https://www.tate.org.uk/visit/tate-britain",
+    "events_url": "https://www.tate.org.uk/whats-on?gallery=tate-britain",
+    "description": "Free British art collection. After-hours events every couple of months with sound, visuals, activities and discussions.",
+    "borough": "Westminster",
+    "category": "museum"
+  },
+  {
+    "name": "Natural History Museum",
+    "homepage": "https://www.nhm.ac.uk/",
+    "events_url": "https://www.nhm.ac.uk/events.html",
+    "description": "Free museum with late night events including legendary silent disco starting at 10pm.",
+    "borough": "Kensington and Chelsea",
+    "category": "museum"
+  },
+  {
+    "name": "ANNKA KULTYS Gallery",
+    "homepage": "https://www.annkakultys.com/",
+    "events_url": "https://www.annkakultys.com/",
+    "description": "Contemporary and digital art gallery on Hackney Road. Wheelchair accessible.",
+    "borough": "Hackney",
+    "category": "gallery"
+  },
+  {
+    "name": "Oriole Bar",
+    "homepage": "https://www.oriolebar.com/",
+    "events_url": "https://www.oriolebar.com/oriole-music",
+    "description": "Live jazz, blues, and world music Wed-Sat in Covent Garden.",
+    "borough": "Westminster",
+    "category": "live music venue"
+  },
+  {
+    "name": "Boisdale",
+    "homepage": "https://www.boisdale.co.uk/",
+    "events_url": "https://www.boisdale.co.uk/",
+    "description": "Jazz, soul and blues in Canary Wharf and Belgravia. Sunday blues brunch, Saturday soul lunches, live bands.",
+    "borough": "Tower Hamlets",
+    "category": "live music venue"
+  }
+]
