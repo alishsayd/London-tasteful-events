@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from contextlib import contextmanager
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -43,10 +45,27 @@ def _domain_from_url(value: str | None) -> str | None:
         return None
 
 
-@contextmanager
-def get_db():
-    with ENGINE.begin() as conn:
-        yield conn
+def _canonical_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = urlparse(value)
+        host = (parsed.netloc or parsed.path).lower().replace("www.", "")
+        path = (parsed.path or "").rstrip("/").lower()
+        if not host:
+            return None
+        return f"{host}{path}" if path else host
+    except Exception:
+        return None
+
+
+def _normalize_name(value: str | None) -> str:
+    lowered = (value or "").strip().lower()
+    lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    if lowered.startswith("the "):
+        lowered = lowered[4:]
+    return lowered
 
 
 def _active_filter_sql() -> str:
@@ -65,6 +84,248 @@ def _queue_condition_sql() -> str:
         OR coalesce(consecutive_empty_extracts, 0) >= 3
     )
     """
+
+
+def _as_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if isinstance(value, str) and value:
+        normalized = value.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except Exception:
+            return None
+    return None
+
+
+def _max_dt(left, right):
+    left_dt = _as_datetime(left)
+    right_dt = _as_datetime(right)
+    if not left_dt:
+        return right
+    if not right_dt:
+        return left
+    return right if right_dt >= left_dt else left
+
+
+def _description_template(row: dict[str, Any]) -> str:
+    name = str(row.get("name") or "This venue").strip()
+    borough = str(row.get("borough") or "").strip()
+    category = str(row.get("category") or "cultural venue").strip()
+
+    if borough and category:
+        return f"{name} is a London {category} in {borough}."
+    if category:
+        return f"{name} is a London {category}."
+    if borough:
+        return f"{name} is a cultural venue in {borough}, London."
+    return f"{name} is a London cultural venue."
+
+
+def _best_description(current: str | None, candidate: str | None, row_fallback: dict[str, Any]) -> str:
+    current_clean = (current or "").strip()
+    candidate_clean = (candidate or "").strip()
+
+    if current_clean and candidate_clean:
+        return candidate_clean if len(candidate_clean) > len(current_clean) else current_clean
+    if candidate_clean:
+        return candidate_clean
+    if current_clean:
+        return current_clean
+    return _description_template(row_fallback)
+
+
+def _issue_priority(value: str | None) -> int:
+    lookup = {"open": 4, "none": 3, "snoozed": 2, "resolved": 1}
+    return lookup.get(str(value or "none"), 3)
+
+
+@contextmanager
+def get_db():
+    with ENGINE.begin() as conn:
+        yield conn
+
+
+def _update_org_row(conn, org_id: int, updates: dict[str, Any]) -> None:
+    if not updates:
+        return
+    set_clause = ", ".join(f"{key} = :{key}" for key in updates)
+    params = {**updates, "org_id": int(org_id)}
+    conn.execute(text(f"UPDATE orgs SET {set_clause} WHERE id = :org_id"), params)
+
+
+def _enrich_row_fields(row: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+
+    source_domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url"))
+    if source_domain and source_domain != row.get("source_domain"):
+        updates["source_domain"] = source_domain
+
+    description = _best_description(row.get("description"), None, row)
+    if description != (row.get("description") or "").strip():
+        updates["description"] = description
+
+    issue_state = str(row.get("issue_state") or "none")
+    events_url = str(row.get("events_url") or "").strip()
+    if not events_url:
+        if issue_state != "open":
+            updates["issue_state"] = "open"
+        if not str(row.get("review_needed_reason") or "").strip():
+            updates["review_needed_reason"] = "Missing events URL"
+
+    return updates
+
+
+def _merge_group(conn, group_rows: list[dict[str, Any]]) -> None:
+    if len(group_rows) <= 1:
+        only = group_rows[0]
+        updates = _enrich_row_fields(only)
+        _update_org_row(conn, int(only["id"]), updates)
+        return
+
+    def score(row: dict[str, Any]) -> int:
+        desc_len = len(str(row.get("description") or "").strip())
+        score_value = desc_len
+        if str(row.get("events_url") or "").strip():
+            score_value += 120
+        if str(row.get("homepage") or "").strip():
+            score_value += 40
+        if str(row.get("borough") or "").strip():
+            score_value += 20
+        if str(row.get("category") or "").strip():
+            score_value += 20
+        if bool(row.get("active", True)):
+            score_value += 10
+        return score_value
+
+    ordered = sorted(group_rows, key=lambda item: (-score(item), int(item["id"])))
+    primary = dict(ordered[0])
+    duplicate_ids = [int(item["id"]) for item in ordered[1:]]
+
+    merged = dict(primary)
+
+    for candidate in ordered[1:]:
+        for key in ("homepage", "events_url", "borough", "category", "source", "source_domain", "review_needed_reason"):
+            if not str(merged.get(key) or "").strip() and str(candidate.get(key) or "").strip():
+                merged[key] = candidate.get(key)
+
+        merged["description"] = _best_description(merged.get("description"), candidate.get("description"), merged)
+
+        if not str(merged.get("notes") or "").strip() and str(candidate.get("notes") or "").strip():
+            merged["notes"] = candidate.get("notes")
+
+        merged["active"] = bool(merged.get("active", True) or candidate.get("active", True))
+        merged["crawl_paused"] = bool(merged.get("crawl_paused", False) and candidate.get("crawl_paused", False))
+
+        merged["consecutive_failures"] = max(int(merged.get("consecutive_failures") or 0), int(candidate.get("consecutive_failures") or 0))
+        merged["consecutive_empty_extracts"] = max(
+            int(merged.get("consecutive_empty_extracts") or 0), int(candidate.get("consecutive_empty_extracts") or 0)
+        )
+
+        merged["last_crawled_at"] = _max_dt(merged.get("last_crawled_at"), candidate.get("last_crawled_at"))
+        merged["last_successful_event_extract_at"] = _max_dt(
+            merged.get("last_successful_event_extract_at"), candidate.get("last_successful_event_extract_at")
+        )
+
+        current_state = str(merged.get("issue_state") or "none")
+        candidate_state = str(candidate.get("issue_state") or "none")
+        if _issue_priority(candidate_state) > _issue_priority(current_state):
+            merged["issue_state"] = candidate_state
+
+    if not str(merged.get("source_domain") or "").strip():
+        merged["source_domain"] = _domain_from_url(merged.get("homepage")) or _domain_from_url(merged.get("events_url"))
+
+    merged["description"] = _best_description(merged.get("description"), None, merged)
+
+    if not str(merged.get("events_url") or "").strip():
+        merged["issue_state"] = "open"
+        if not str(merged.get("review_needed_reason") or "").strip():
+            merged["review_needed_reason"] = "Missing events URL"
+
+    updates = {
+        "homepage": merged.get("homepage"),
+        "events_url": merged.get("events_url"),
+        "description": merged.get("description"),
+        "borough": merged.get("borough"),
+        "category": merged.get("category"),
+        "source": merged.get("source"),
+        "source_domain": merged.get("source_domain"),
+        "notes": merged.get("notes"),
+        "active": merged.get("active", True),
+        "crawl_paused": merged.get("crawl_paused", False),
+        "last_crawled_at": merged.get("last_crawled_at"),
+        "last_successful_event_extract_at": merged.get("last_successful_event_extract_at"),
+        "consecutive_failures": merged.get("consecutive_failures", 0),
+        "consecutive_empty_extracts": merged.get("consecutive_empty_extracts", 0),
+        "issue_state": merged.get("issue_state") or "none",
+        "review_needed_reason": merged.get("review_needed_reason"),
+    }
+
+    _update_org_row(conn, int(primary["id"]), updates)
+
+    if duplicate_ids:
+        statement = text("DELETE FROM orgs WHERE id IN :ids").bindparams(bindparam("ids", expanding=True))
+        conn.execute(statement, {"ids": duplicate_ids})
+
+
+def _dedupe_and_enrich() -> None:
+    with get_db() as conn:
+        rows = [dict(item) for item in conn.execute(text("SELECT * FROM orgs ORDER BY id ASC")).mappings().all()]
+        if not rows:
+            return
+
+        parent: dict[int, int] = {}
+        seen: dict[tuple, int] = {}
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra = find(a)
+            rb = find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for row in rows:
+            row_id = int(row["id"])
+            parent[row_id] = row_id
+
+        for row in rows:
+            row_id = int(row["id"])
+            name_key = _normalize_name(row.get("name"))
+            domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url"))
+            homepage_key = _canonical_url(row.get("homepage"))
+            events_key = _canonical_url(row.get("events_url"))
+
+            keys: list[tuple] = []
+            if domain and name_key:
+                keys.append(("domain_name", domain, name_key))
+            if homepage_key:
+                keys.append(("homepage", homepage_key))
+            if events_key:
+                keys.append(("events", events_key))
+            if not domain and name_key:
+                keys.append(("name_only", name_key))
+
+            for key in keys:
+                existing = seen.get(key)
+                if existing is None:
+                    seen[key] = row_id
+                else:
+                    union(row_id, existing)
+
+        groups: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            root = find(int(row["id"]))
+            groups.setdefault(root, []).append(row)
+
+        for group_rows in groups.values():
+            _merge_group(conn, group_rows)
 
 
 def init_db() -> None:
@@ -114,7 +375,6 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS issue_state TEXT NOT NULL DEFAULT 'none'"))
             conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS review_needed_reason TEXT"))
         else:
-            # SQLite path for local/dev only; most environments here are Postgres on Render.
             for statement in [
                 "ALTER TABLE orgs ADD COLUMN active BOOLEAN NOT NULL DEFAULT 1",
                 "ALTER TABLE orgs ADD COLUMN crawl_paused BOOLEAN NOT NULL DEFAULT 0",
@@ -161,40 +421,8 @@ def init_db() -> None:
             )
         )
 
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS codex_batch_state (
-                    id INTEGER PRIMARY KEY,
-                    batch_number INTEGER NOT NULL DEFAULT 1,
-                    active_batch_ids TEXT NOT NULL DEFAULT '[]',
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-        )
-
-        if IS_POSTGRES:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO codex_batch_state (id, batch_number, active_batch_ids)
-                    VALUES (1, 1, '[]')
-                    ON CONFLICT (id) DO NOTHING
-                    """
-                )
-            )
-        else:
-            conn.execute(
-                text(
-                    """
-                    INSERT OR IGNORE INTO codex_batch_state (id, batch_number, active_batch_ids)
-                    VALUES (1, 1, '[]')
-                    """
-                )
-            )
-
     _seed_if_empty()
+    _dedupe_and_enrich()
 
 
 def _seed_if_empty() -> None:
@@ -235,35 +463,76 @@ def upsert_org(
     category: str | None = None,
     source: str | None = None,
 ) -> int:
-    """Insert an org if it doesn't already exist (by normalized name+homepage)."""
+    """Insert an org, or merge into an existing matching org."""
     if not name:
         raise ValueError("name is required")
 
+    source_domain = _domain_from_url(homepage) or _domain_from_url(events_url)
+    norm_name = _normalize_name(name)
+
     with get_db() as conn:
-        existing = conn.execute(
+        candidates = conn.execute(
             text(
                 """
-                SELECT id FROM orgs
+                SELECT * FROM orgs
                 WHERE lower(name) = lower(:name)
-                  AND coalesce(homepage, '') = coalesce(:homepage, '')
-                LIMIT 1
+                   OR coalesce(homepage, '') = coalesce(:homepage, '')
+                   OR coalesce(events_url, '') = coalesce(:events_url, '')
+                   OR (:source_domain IS NOT NULL AND source_domain = :source_domain)
+                ORDER BY id ASC
                 """
             ),
-            {"name": name, "homepage": homepage},
-        ).mappings().first()
+            {"name": name, "homepage": homepage, "events_url": events_url, "source_domain": source_domain},
+        ).mappings().all()
+
+        existing = None
+        for row in candidates:
+            row_name = _normalize_name(row.get("name"))
+            row_domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url"))
+            if row_name and norm_name and row_name == norm_name:
+                if row_domain and source_domain and row_domain == source_domain:
+                    existing = dict(row)
+                    break
+                if not row_domain or not source_domain:
+                    existing = dict(row)
+                    break
 
         if existing:
+            updates: dict[str, Any] = {}
+
+            if not str(existing.get("homepage") or "").strip() and str(homepage or "").strip():
+                updates["homepage"] = homepage
+            if not str(existing.get("events_url") or "").strip() and str(events_url or "").strip():
+                updates["events_url"] = events_url
+            if not str(existing.get("borough") or "").strip() and str(borough or "").strip():
+                updates["borough"] = borough
+            if not str(existing.get("category") or "").strip() and str(category or "").strip():
+                updates["category"] = category
+            if not str(existing.get("source") or "").strip() and str(source or "").strip():
+                updates["source"] = source
+
+            best_description = _best_description(existing.get("description"), description, {**existing, "name": name, "borough": borough, "category": category})
+            if best_description != (existing.get("description") or "").strip():
+                updates["description"] = best_description
+
+            next_domain = source_domain or existing.get("source_domain") or _domain_from_url(existing.get("homepage")) or _domain_from_url(existing.get("events_url"))
+            if next_domain and next_domain != existing.get("source_domain"):
+                updates["source_domain"] = next_domain
+
+            if updates:
+                _update_org_row(conn, int(existing["id"]), updates)
+
             return int(existing["id"])
 
         params = {
             "name": name,
             "homepage": homepage,
             "events_url": events_url,
-            "description": description,
+            "description": _best_description(None, description, {"name": name, "borough": borough, "category": category}),
             "borough": borough,
             "category": category,
             "source": source,
-            "source_domain": _domain_from_url(homepage) or _domain_from_url(events_url),
+            "source_domain": source_domain,
         }
 
         if IS_POSTGRES:
@@ -322,31 +591,6 @@ def get_orgs(status: str | None = None, borough: str | None = None, category: st
         return [dict(row) for row in rows]
 
 
-def get_orgs_by_ids(ids: list[int]) -> list[dict[str, Any]]:
-    if not ids:
-        return []
-
-    normalized = [int(item) for item in ids]
-    statement = text("SELECT * FROM orgs WHERE id IN :ids").bindparams(bindparam("ids", expanding=True))
-
-    with get_db() as conn:
-        rows = conn.execute(statement, {"ids": normalized}).mappings().all()
-
-    by_id = {int(row["id"]): dict(row) for row in rows}
-    return [by_id[item] for item in normalized if item in by_id]
-
-
-def get_pending_orgs(limit: int | None = None) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        query = "SELECT * FROM orgs WHERE status = 'pending' ORDER BY created_at DESC, id DESC"
-        params: dict[str, Any] = {}
-        if limit:
-            query += " LIMIT :limit"
-            params["limit"] = int(limit)
-        rows = conn.execute(text(query), params).mappings().all()
-        return [dict(row) for row in rows]
-
-
 def update_org_status(org_id: int, status: str, notes: str | None = None) -> None:
     with get_db() as conn:
         conn.execute(
@@ -382,12 +626,13 @@ def update_org(org_id: int, **fields: Any) -> None:
         "consecutive_empty_extracts",
         "issue_state",
         "review_needed_reason",
+        "source_domain",
     }
     updates = {key: value for key, value in fields.items() if key in allowed}
     if not updates:
         return
 
-    if "homepage" in updates or "events_url" in updates:
+    if "homepage" in updates or "events_url" in updates or "source_domain" not in updates:
         homepage = updates.get("homepage")
         events_url = updates.get("events_url")
         if homepage is None or events_url is None:
@@ -395,6 +640,10 @@ def update_org(org_id: int, **fields: Any) -> None:
             homepage = homepage if homepage is not None else current.get("homepage")
             events_url = events_url if events_url is not None else current.get("events_url")
         updates["source_domain"] = _domain_from_url(homepage) or _domain_from_url(events_url)
+
+    if "description" in updates:
+        current = get_org(org_id) or {}
+        updates["description"] = _best_description(current.get("description"), updates.get("description"), {**current, **updates})
 
     set_clause = ", ".join(f"{key} = :{key}" for key in updates)
     params = {**updates, "org_id": org_id}
@@ -540,44 +789,4 @@ def set_codex_strategy_active(strategy_id: int, active: bool) -> None:
         conn.execute(
             text("UPDATE codex_strategies SET active = :active WHERE id = :strategy_id"),
             {"active": active, "strategy_id": strategy_id},
-        )
-
-
-def get_codex_batch_state() -> dict[str, Any]:
-    with get_db() as conn:
-        row = conn.execute(
-            text("SELECT batch_number, active_batch_ids, updated_at FROM codex_batch_state WHERE id = 1")
-        ).mappings().first()
-
-    if not row:
-        return {"batch_number": 1, "active_batch_ids": [], "updated_at": None}
-
-    active_batch_ids_raw = row["active_batch_ids"] or "[]"
-    try:
-        ids = json.loads(active_batch_ids_raw)
-    except Exception:
-        ids = []
-
-    normalized_ids = [int(item) for item in ids if isinstance(item, int) or (isinstance(item, str) and item.isdigit())]
-    return {
-        "batch_number": int(row["batch_number"]),
-        "active_batch_ids": normalized_ids,
-        "updated_at": row["updated_at"],
-    }
-
-
-def save_codex_batch_state(batch_number: int, active_batch_ids: list[int]) -> None:
-    ids_json = json.dumps([int(item) for item in active_batch_ids])
-    with get_db() as conn:
-        conn.execute(
-            text(
-                """
-                UPDATE codex_batch_state
-                SET batch_number = :batch_number,
-                    active_batch_ids = :active_batch_ids,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-                """
-            ),
-            {"batch_number": int(batch_number), "active_batch_ids": ids_json},
         )

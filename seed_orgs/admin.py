@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timedelta, timezone
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request
 
 from seed_orgs.db import (
     add_codex_strategy,
@@ -24,7 +24,6 @@ from seed_orgs.db import (
     init_db,
     set_codex_strategy_active,
     update_org,
-    update_org_status,
     upsert_org,
 )
 
@@ -114,41 +113,14 @@ def _state_payload() -> dict:
 
 
 @app.route("/")
-def index():
-    status = request.args.get("status", "pending")
-    borough = request.args.get("borough")
-    category = request.args.get("category")
-    orgs = get_orgs(
-        status=status if status != "all" else None,
-        borough=borough if borough else None,
-        category=category if category else None,
-    )
-    stats = get_stats()
-    return render_template(
-        "index.html",
-        orgs=orgs,
-        stats=stats,
-        current_status=status,
-        current_borough=borough,
-        current_category=category,
-    )
-
-
-@app.route("/codex")
-def codex_review():
+def home():
     payload = _state_payload()
     return render_template("codex_review.html", stats=get_stats(), payload=payload)
 
 
-@app.route("/api/orgs/<int:org_id>/status", methods=["POST"])
-def set_status(org_id):
-    data = request.json or {}
-    status = data.get("status")
-    notes = data.get("notes")
-    if status not in ("approved", "rejected", "maybe", "pending"):
-        return jsonify({"error": "invalid status"}), 400
-    update_org_status(org_id, status, notes)
-    return jsonify({"ok": True})
+@app.route("/codex")
+def codex_redirect():
+    return redirect("/", code=302)
 
 
 @app.route("/api/orgs/<int:org_id>", methods=["PATCH"])
@@ -223,9 +195,8 @@ def stats():
 
 @app.route("/export")
 def export():
-    """Export approved orgs as JSON."""
-    orgs = get_orgs(status="approved")
-    return jsonify(orgs)
+    """Export active orgs as JSON."""
+    return jsonify(get_active_orgs())
 
 
 @app.route("/api/codex/state")
@@ -345,9 +316,8 @@ def main():
     args = parser.parse_args()
 
     init_db()
-    print(f"\n  Org Review Panel:   http://{args.host}:{args.port}")
-    print(f"  Codex curation:     http://{args.host}:{args.port}/codex")
-    print(f"  Export approved:    http://{args.host}:{args.port}/export\n")
+    print(f"\n  Org Curation:       http://{args.host}:{args.port}")
+    print(f"  Export active:      http://{args.host}:{args.port}/export\n")
     app.run(host=args.host, port=args.port, debug=True)
 
 
