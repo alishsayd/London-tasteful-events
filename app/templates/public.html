@@ -41,6 +41,11 @@
         grid-template-columns: 1fr 1fr auto;
         gap: 8px;
         margin-bottom: 10px;
+        position: sticky;
+        top: 0;
+        z-index: 4;
+        background: var(--bg);
+        padding: 8px 0;
       }
 
       select,
@@ -68,24 +73,37 @@
 
       .list li {
         border-top: 1px solid var(--line);
+        padding: 9px 12px;
       }
 
       .list li:first-child {
         border-top: none;
       }
 
-      .list a,
-      .list span {
+      .org-name {
         display: block;
-        padding: 10px 12px;
         font-size: 14px;
         line-height: 1.25;
-        text-decoration: none;
-        color: inherit;
+        margin: 0;
       }
 
-      .list a:hover {
-        background: #f7fbfb;
+      .org-name a {
+        color: #0645ad;
+        text-decoration: underline;
+      }
+
+      .org-name a:visited {
+        color: #551a8b;
+      }
+
+      .org-name a:hover {
+        color: #0b2e87;
+      }
+
+      .org-meta {
+        margin-top: 2px;
+        font-size: 12px;
+        color: var(--muted);
       }
 
       .empty {
@@ -207,8 +225,17 @@
           .map((org) => {
             const name = clean(org.name, "Unnamed");
             const eventsUrl = clean(org.events_url);
-            if (!eventsUrl) return `<li><span>${escapeHtml(name)}</span></li>`;
-            return `<li><a href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(name)}</a></li>`;
+            const category = titleCase(clean(org.category, "other"));
+            const borough = clean(org.borough, "Unspecified");
+            const nameMarkup = eventsUrl
+              ? `<a href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(name)}</a>`
+              : escapeHtml(name);
+            return `
+              <li>
+                <p class="org-name">${nameMarkup}</p>
+                <div class="org-meta">${escapeHtml(category)} • ${escapeHtml(borough)}</div>
+              </li>
+            `;
           })
           .join("");
 
