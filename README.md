@@ -26,6 +26,7 @@ Default local DB file: `orgs.db` (created automatically).
 - `DISCOVERY_OPENAI_MODEL`: defaults to `gpt-5`
 - `DISCOVERY_OPENAI_EXTERNAL_WEB_ACCESS`: defaults to `true`
 - `DISCOVERY_OPENAI_FALLBACK_TO_DUCKDUCKGO`: defaults to `true`
+- `DISCOVERY_MAX_URLS_PER_DOMAIN`: defaults to `3`; allows additional candidate pages per domain
 
 ## Deploy (Render)
 

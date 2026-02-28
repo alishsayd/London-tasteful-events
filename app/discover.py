@@ -97,6 +97,41 @@ CATEGORIES = [
     "independent arts venue",
 ]
 
+COUNTRY_FOCUS_TERMS = [
+    "japanese",
+    "korean",
+    "indian",
+    "hungarian",
+    "irish",
+    "mexican",
+    "russian",
+    "polish",
+    "turkish",
+    "arab",
+    "chinese",
+    "french",
+    "german",
+    "italian",
+    "spanish",
+    "portuguese",
+    "greek",
+    "ukrainian",
+    "african",
+    "latin american",
+]
+
+LOW_SIGNAL_STRATEGY_PHRASES = {
+    "lates",
+    "friday lates",
+    "late night",
+    "events",
+    "what s on",
+    "whats on",
+    "calendar",
+    "program",
+    "programme",
+}
+
 AGGREGATOR_QUERIES = [
     "site:ianvisits.co.uk London free art talk",
     "site:ianvisits.co.uk London gallery events",
@@ -1022,12 +1057,24 @@ def generate_queries(boroughs=None, categories=None):
 def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -> list[dict[str, Any]]:
     active_strategies = [item for item in get_strategies() if item.get("active")]
 
+    def _is_low_signal_phrase(value: str) -> bool:
+        normalized = _normalize_token(value)
+        if not normalized:
+            return True
+        if normalized in LOW_SIGNAL_STRATEGY_PHRASES:
+            return True
+        if _looks_like_program_text(value) or _looks_like_article_title(value):
+            return True
+        return _word_count(value) < 2
+
     def _extract_quoted_phrases(value: str) -> list[str]:
         results: list[str] = []
         seen: set[str] = set()
         for groups in re.findall(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'', value):
             phrase = _clean_text(next((part for part in groups if part), ""))
             if len(phrase) < 3:
+                continue
+            if _is_low_signal_phrase(phrase):
                 continue
             key = phrase.lower()
             if key in seen:
@@ -1047,7 +1094,17 @@ def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -
         for old, new in replacements:
             if re.search(rf"\b{old}\b", value, flags=re.IGNORECASE):
                 variants.add(re.sub(rf"\b{old}\b", new, value, flags=re.IGNORECASE))
-        return [item for item in variants if item]
+        out = []
+        for item in variants:
+            clean = _clean_text(item)
+            if not clean:
+                continue
+            if _word_count(clean) > 7:
+                continue
+            if _looks_like_program_text(clean):
+                continue
+            out.append(clean)
+        return out
 
     def _dedupe_pool(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -1063,6 +1120,54 @@ def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -
             out.append({**item, "query": query})
         return out
 
+    def _has_country_focus_hint(value: str) -> bool:
+        lower = _normalize_token(value)
+        hints = (
+            "country cultural",
+            "cultural center",
+            "cultural centre",
+            "cultural institute",
+            "japan house",
+            "korean cultural",
+            "country focused",
+        )
+        return any(hint in lower for hint in hints)
+
+    def _country_focus_queries(strategy_id: int) -> list[dict[str, Any]]:
+        queries: list[dict[str, Any]] = [
+            {
+                "query": "country cultural centres in London",
+                "source": "strategy_country",
+                "strategy_id": strategy_id,
+            },
+            {
+                "query": "national cultural institutes in London",
+                "source": "strategy_country",
+                "strategy_id": strategy_id,
+            },
+            {
+                "query": "country themed cultural houses in London",
+                "source": "strategy_country",
+                "strategy_id": strategy_id,
+            },
+        ]
+        for term in COUNTRY_FOCUS_TERMS:
+            queries.extend(
+                [
+                    {
+                        "query": f"{term} cultural centre London",
+                        "source": "strategy_country",
+                        "strategy_id": strategy_id,
+                    },
+                    {
+                        "query": f"{term} cultural center London",
+                        "source": "strategy_country",
+                        "strategy_id": strategy_id,
+                    },
+                ]
+            )
+        return queries
+
     strategy_pools: list[list[dict[str, Any]]] = []
     for strategy in active_strategies:
         text_value = _clean_text(strategy.get("text"))
@@ -1077,17 +1182,17 @@ def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -
             strategy_queries.extend(
                 [
                     {
-                        "query": f"\"{phrase}\" London cultural centre events",
+                        "query": f"{phrase} London cultural centre",
                         "source": "strategy_phrase",
                         "strategy_id": strategy_id,
                     },
                     {
-                        "query": f"\"{phrase}\" London cultural center events",
+                        "query": f"{phrase} London cultural center",
                         "source": "strategy_phrase",
                         "strategy_id": strategy_id,
                     },
                     {
-                        "query": f"\"{phrase}\" London what's on",
+                        "query": f"{phrase} London events programme",
                         "source": "strategy_phrase",
                         "strategy_id": strategy_id,
                     },
@@ -1095,13 +1200,18 @@ def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -
             )
 
         for variant in _center_variants(text_value):
+            if _is_low_signal_phrase(variant):
+                continue
             strategy_queries.append(
                 {
-                    "query": f"{variant} London cultural events venue",
+                    "query": f"{variant} London cultural venue",
                     "source": "strategy",
                     "strategy_id": strategy_id,
                 }
             )
+
+        if _has_country_focus_hint(text_value):
+            strategy_queries.extend(_country_focus_queries(strategy_id))
 
         strategy_queries = _dedupe_pool(strategy_queries)
         if strategy_queries:
@@ -1153,9 +1263,19 @@ def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -
             added += 1
         return idx
 
-    floor_strategy = 1 if strategy_pool and max_queries >= 4 else 0
-    floor_grid = 2 if grid_pool and max_queries >= 8 else (1 if grid_pool and max_queries >= 4 else 0)
-    floor_aggregator = 1 if aggregator_pool and max_queries >= 4 else 0
+    floor_strategy = 0
+    if strategy_pool:
+        if max_queries >= 10:
+            floor_strategy = 4
+        elif max_queries >= 8:
+            floor_strategy = 3
+        elif max_queries >= 4:
+            floor_strategy = 2
+        else:
+            floor_strategy = 1
+
+    floor_grid = 1 if grid_pool and max_queries >= 6 else (1 if grid_pool and max_queries >= 3 else 0)
+    floor_aggregator = 1 if aggregator_pool and max_queries >= 8 else 0
 
     while floor_strategy + floor_grid + floor_aggregator > max_queries:
         if floor_aggregator > 0:
@@ -1176,10 +1296,10 @@ def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -
         strategy_idx = _add_from_pool(strategy_pool, strategy_idx, 1)
         if len(selected) >= max_queries:
             break
-        grid_idx = _add_from_pool(grid_pool, grid_idx, 1)
+        aggregator_idx = _add_from_pool(aggregator_pool, aggregator_idx, 1)
         if len(selected) >= max_queries:
             break
-        aggregator_idx = _add_from_pool(aggregator_pool, aggregator_idx, 1)
+        grid_idx = _add_from_pool(grid_pool, grid_idx, 1)
         if len(selected) == before:
             break
 
@@ -1275,6 +1395,7 @@ def run_discovery_cycle(
     max_results_per_query = max_results_per_query or _env_int("DISCOVERY_MAX_RESULTS_PER_QUERY", 8)
     max_candidates = max_candidates or _env_int("DISCOVERY_MAX_CANDIDATES", 60)
     request_timeout = request_timeout or _env_int("DISCOVERY_REQUEST_TIMEOUT", 12)
+    max_urls_per_domain = _env_int("DISCOVERY_MAX_URLS_PER_DOMAIN", 3)
     lock_window_minutes = _env_int("DISCOVERY_RUN_LOCK_MINUTES", 90)
     manual_unlock_minutes = _env_int("DISCOVERY_MANUAL_UNLOCK_MINUTES", 5)
     search_provider = _clean_text(search_provider or os.getenv("DISCOVERY_SEARCH_PROVIDER") or "duckduckgo")
@@ -1339,6 +1460,7 @@ def run_discovery_cycle(
             "max_results_per_query": max_results_per_query,
             "max_candidates": max_candidates,
             "request_timeout": request_timeout,
+            "max_urls_per_domain": max_urls_per_domain,
             "dry_run": dry_run,
             "search_provider": search_provider,
         },
@@ -1349,7 +1471,7 @@ def run_discovery_cycle(
     aggregator_seed_urls: list[str] = []
     query_debug: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
-    seen_domains: set[str] = set()
+    domain_counts: dict[str, int] = {}
 
     try:
         for item in queries:
@@ -1365,14 +1487,16 @@ def run_discovery_cycle(
                 query_errors += 1
                 continue
 
+            accepted_count = 0
+            debug_entry = None
             if len(query_debug) < 12:
-                query_debug.append(
-                    {
-                        "query": query,
-                        "result_count": len(results),
-                        "sample_urls": results[:3],
-                    }
-                )
+                debug_entry = {
+                    "query": query,
+                    "result_count": len(results),
+                    "accepted_url_count": 0,
+                    "sample_urls": results[:3],
+                }
+                query_debug.append(debug_entry)
 
             for url in results:
                 if _should_skip_url(url):
@@ -1381,14 +1505,20 @@ def run_discovery_cycle(
                 if key in seen_urls:
                     continue
                 domain = _domain(url)
-                if not domain or domain in seen_domains:
+                if not domain:
+                    continue
+                if domain_counts.get(domain, 0) >= max_urls_per_domain:
                     continue
                 seen_urls.add(key)
-                seen_domains.add(domain)
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
                 if domain in AGGREGATOR_SOURCE_DOMAINS:
                     aggregator_seed_urls.append(url)
                 else:
                     searched_urls.append(url)
+                accepted_count += 1
+
+            if debug_entry is not None:
+                debug_entry["accepted_url_count"] = accepted_count
 
             if len(searched_urls) >= max_candidates * 2:
                 break
@@ -1409,11 +1539,13 @@ def run_discovery_cycle(
                 if key in seen_urls:
                     continue
                 domain = _domain(url)
-                if not domain or domain in seen_domains:
+                if not domain:
+                    continue
+                if domain_counts.get(domain, 0) >= max_urls_per_domain:
                     continue
 
                 seen_urls.add(key)
-                seen_domains.add(domain)
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
                 searched_urls.append(url)
 
                 if len(searched_urls) >= max_candidates * 2:
@@ -1458,6 +1590,7 @@ def run_discovery_cycle(
             "upserted_count": upserted_count,
             "dry_run": dry_run,
             "search_provider": search_provider,
+            "max_urls_per_domain": max_urls_per_domain,
             "query_debug": query_debug,
         }
         finish_discovery_run(
