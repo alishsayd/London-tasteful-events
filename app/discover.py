@@ -456,19 +456,32 @@ def _search_duckduckgo(query: str, max_results: int, timeout: int) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
 
-    for anchor in soup.select("a.result__a"):
-        href = _unwrap_duckduckgo_href(str(anchor.get("href") or ""))
-        if not href:
-            continue
-        if _should_skip_url(href):
-            continue
-        key = href.strip().lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        urls.append(href)
-        if len(urls) >= max_results:
-            break
+    def _collect_urls(anchors) -> None:
+        for anchor in anchors:
+            href = _unwrap_duckduckgo_href(str(anchor.get("href") or ""))
+            if not href:
+                continue
+            if _should_skip_url(href):
+                continue
+            key = href.strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(href)
+            if len(urls) >= max_results:
+                break
+
+    primary_selectors = (
+        "a.result__a",
+        "a[data-testid='result-title-a']",
+        ".result__title a[href]",
+        "h2 a[href]",
+    )
+    _collect_urls(soup.select(", ".join(primary_selectors)))
+
+    # DuckDuckGo markup can vary; fall back to scanning all links if primary selectors fail.
+    if len(urls) < max_results:
+        _collect_urls(soup.select("a[href]"))
 
     return urls
 
@@ -693,46 +706,168 @@ def generate_queries(boroughs=None, categories=None):
 def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -> list[dict[str, Any]]:
     active_strategies = [item for item in get_strategies() if item.get("active")]
 
-    query_objects: list[dict[str, Any]] = []
+    def _extract_quoted_phrases(value: str) -> list[str]:
+        results: list[str] = []
+        seen: set[str] = set()
+        for groups in re.findall(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'', value):
+            phrase = _clean_text(next((part for part in groups if part), ""))
+            if len(phrase) < 3:
+                continue
+            key = phrase.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(phrase)
+        return results
 
+    def _center_variants(value: str) -> list[str]:
+        variants = {_clean_text(value)}
+        replacements = (
+            ("centers", "centres"),
+            ("center", "centre"),
+            ("centres", "centers"),
+            ("centre", "center"),
+        )
+        for old, new in replacements:
+            if re.search(rf"\b{old}\b", value, flags=re.IGNORECASE):
+                variants.add(re.sub(rf"\b{old}\b", new, value, flags=re.IGNORECASE))
+        return [item for item in variants if item]
+
+    def _dedupe_pool(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
+            query = _clean_text(item.get("query"))
+            if not query:
+                continue
+            key = query.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({**item, "query": query})
+        return out
+
+    strategy_pools: list[list[dict[str, Any]]] = []
     for strategy in active_strategies:
         text_value = _clean_text(strategy.get("text"))
         if not text_value:
             continue
 
-        query_objects.append(
-            {
-                "query": f"{text_value} London cultural events venue",
-                "source": "strategy",
-                "strategy_id": int(strategy["id"]),
-            }
-        )
+        strategy_id = int(strategy["id"])
+        strategy_queries: list[dict[str, Any]] = []
 
-    for q in AGGREGATOR_QUERIES:
-        query_objects.append({"query": q, "source": "aggregator"})
+        # Prioritise quoted entities first (e.g. "Japan House").
+        for phrase in _extract_quoted_phrases(text_value):
+            strategy_queries.extend(
+                [
+                    {
+                        "query": f"\"{phrase}\" London cultural centre events",
+                        "source": "strategy_phrase",
+                        "strategy_id": strategy_id,
+                    },
+                    {
+                        "query": f"\"{phrase}\" London cultural center events",
+                        "source": "strategy_phrase",
+                        "strategy_id": strategy_id,
+                    },
+                    {
+                        "query": f"\"{phrase}\" London what's on",
+                        "source": "strategy_phrase",
+                        "strategy_id": strategy_id,
+                    },
+                ]
+            )
 
+        for variant in _center_variants(text_value):
+            strategy_queries.append(
+                {
+                    "query": f"{variant} London cultural events venue",
+                    "source": "strategy",
+                    "strategy_id": strategy_id,
+                }
+            )
+
+        strategy_queries = _dedupe_pool(strategy_queries)
+        if strategy_queries:
+            strategy_pools.append(strategy_queries)
+
+    strategy_pool: list[dict[str, Any]] = []
+    strategy_positions = [0 for _ in strategy_pools]
+    while strategy_pools:
+        progressed = False
+        for idx, pool in enumerate(strategy_pools):
+            position = strategy_positions[idx]
+            if position >= len(pool):
+                continue
+            strategy_pool.append(pool[position])
+            strategy_positions[idx] += 1
+            progressed = True
+        if not progressed:
+            break
+
+    strategy_pool = _dedupe_pool(strategy_pool)
+    aggregator_pool = _dedupe_pool([{"query": q, "source": "aggregator"} for q in AGGREGATOR_QUERIES])
+
+    grid_pool: list[dict[str, Any]] = []
     grid = [item for item in generate_queries(boroughs=boroughs, categories=categories) if item.get("source") == "borough_search"]
     if grid:
         start = date.today().toordinal() % len(grid)
-        rotate_count = min(len(grid), max_queries * 3)
+        rotate_count = min(len(grid), max_queries * 4)
         for idx in range(rotate_count):
-            query_objects.append(grid[(start + idx) % len(grid)])
+            grid_pool.append(grid[(start + idx) % len(grid)])
+    grid_pool = _dedupe_pool(grid_pool)
 
-    deduped: list[dict[str, Any]] = []
-    seen_queries: set[str] = set()
-    for item in query_objects:
-        query = _clean_text(item.get("query"))
-        if not query:
-            continue
-        key = query.lower()
-        if key in seen_queries:
-            continue
-        seen_queries.add(key)
-        deduped.append({**item, "query": query})
-        if len(deduped) >= max_queries:
+    selected: list[dict[str, Any]] = []
+    selected_keys: set[str] = set()
+
+    strategy_idx = 0
+    grid_idx = 0
+    aggregator_idx = 0
+
+    def _add_from_pool(pool: list[dict[str, Any]], idx: int, target_count: int) -> int:
+        added = 0
+        while idx < len(pool) and added < target_count and len(selected) < max_queries:
+            item = pool[idx]
+            idx += 1
+            key = item["query"].lower()
+            if key in selected_keys:
+                continue
+            selected.append(item)
+            selected_keys.add(key)
+            added += 1
+        return idx
+
+    floor_strategy = 1 if strategy_pool and max_queries >= 4 else 0
+    floor_grid = 2 if grid_pool and max_queries >= 8 else (1 if grid_pool and max_queries >= 4 else 0)
+    floor_aggregator = 1 if aggregator_pool and max_queries >= 4 else 0
+
+    while floor_strategy + floor_grid + floor_aggregator > max_queries:
+        if floor_aggregator > 0:
+            floor_aggregator -= 1
+        elif floor_grid > 0:
+            floor_grid -= 1
+        elif floor_strategy > 0:
+            floor_strategy -= 1
+        else:
             break
 
-    return deduped
+    strategy_idx = _add_from_pool(strategy_pool, strategy_idx, floor_strategy)
+    grid_idx = _add_from_pool(grid_pool, grid_idx, floor_grid)
+    aggregator_idx = _add_from_pool(aggregator_pool, aggregator_idx, floor_aggregator)
+
+    while len(selected) < max_queries:
+        before = len(selected)
+        strategy_idx = _add_from_pool(strategy_pool, strategy_idx, 1)
+        if len(selected) >= max_queries:
+            break
+        grid_idx = _add_from_pool(grid_pool, grid_idx, 1)
+        if len(selected) >= max_queries:
+            break
+        aggregator_idx = _add_from_pool(aggregator_pool, aggregator_idx, 1)
+        if len(selected) == before:
+            break
+
+    return selected[:max_queries]
 
 
 def import_from_file(filepath):
