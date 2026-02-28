@@ -3,16 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>London Tasteful Events - Browse Orgs</title>
+    <title>London Tasteful Events</title>
     <style>
       :root {
-        --bg: #f2f5f2;
+        --bg: #f5f6f6;
+        --ink: #132126;
+        --muted: #607074;
+        --line: #d7dede;
         --card: #ffffff;
-        --ink: #122023;
-        --muted: #5b686b;
-        --line: #d8e0df;
-        --accent: #0f6e65;
-        --accent-soft: #e5f5f2;
       }
 
       * {
@@ -23,214 +21,104 @@
         margin: 0;
         font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
         color: var(--ink);
-        background:
-          radial-gradient(1200px 500px at 100% -10%, #deece9 0%, transparent 70%),
-          radial-gradient(1000px 450px at -10% 0%, #eaf0e8 0%, transparent 70%),
-          var(--bg);
+        background: var(--bg);
       }
 
-      .shell {
-        max-width: 980px;
+      main {
+        max-width: 900px;
         margin: 0 auto;
-        padding: 18px 14px 28px;
-      }
-
-      .hero {
-        padding: 14px 14px 12px;
-        border: 1px solid var(--line);
-        background: var(--card);
-        border-radius: 14px;
-      }
-
-      .kicker {
-        margin: 0;
-        font-size: 12px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--muted);
+        padding: 16px 12px 28px;
       }
 
       h1 {
-        margin: 4px 0 6px;
+        margin: 0 0 10px;
         font-size: 24px;
-        line-height: 1.15;
-      }
-
-      .sub {
-        margin: 0;
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      .controls {
-        position: sticky;
-        top: 0;
-        z-index: 5;
-        margin-top: 10px;
-        padding: 10px;
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: color-mix(in srgb, var(--card) 94%, var(--accent-soft) 6%);
-        backdrop-filter: blur(4px);
-      }
-
-      .control-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr auto;
-        gap: 8px;
-      }
-
-      .field {
-        display: grid;
-        gap: 4px;
-      }
-
-      .field label {
-        font-size: 11px;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-      }
-
-      .field select {
-        width: 100%;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        font-size: 14px;
-        padding: 9px 10px;
-        background: #fff;
-        color: var(--ink);
-      }
-
-      .btn {
-        border: 1px solid #145b54;
-        color: #fff;
-        background: var(--accent);
-        border-radius: 10px;
-        padding: 10px 12px;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-
-      .results {
-        margin-top: 10px;
-        display: grid;
-        gap: 10px;
-      }
-
-      .category-block {
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: var(--card);
-        overflow: hidden;
-      }
-
-      .category-head {
-        padding: 10px 12px;
-        border-bottom: 1px solid var(--line);
-        background: #f9fbfa;
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 10px;
-      }
-
-      .category-head h2 {
-        margin: 0;
-        font-size: 16px;
-      }
-
-      .count {
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .borough-block {
-        border-top: 1px solid var(--line);
-      }
-
-      .borough-head {
-        margin: 0;
-        padding: 8px 12px;
-        font-size: 12px;
-        color: var(--muted);
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        background: #fbfdfc;
-      }
-
-      .org-row {
-        padding: 8px 12px;
-        border-top: 1px dashed #e4ebea;
-      }
-
-      .org-row:first-child {
-        border-top: none;
-      }
-
-      .org-name {
-        margin: 0;
-        font-size: 14px;
-        font-weight: 600;
         line-height: 1.2;
       }
 
-      .org-name a {
-        color: inherit;
-        text-decoration: none;
-        border-bottom: 1px solid #8ebcb6;
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 8px;
+        margin-bottom: 10px;
       }
 
-      .org-meta {
-        margin-top: 2px;
-        color: var(--muted);
-        font-size: 12px;
+      select,
+      button {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--ink);
+        font-size: 14px;
+        padding: 9px 10px;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--card);
+      }
+
+      .list li {
+        border-top: 1px solid var(--line);
+      }
+
+      .list li:first-child {
+        border-top: none;
+      }
+
+      .list a,
+      .list span {
+        display: block;
+        padding: 10px 12px;
+        font-size: 14px;
+        line-height: 1.25;
+        text-decoration: none;
+        color: inherit;
+      }
+
+      .list a:hover {
+        background: #f7fbfb;
       }
 
       .empty {
-        border: 1px dashed #b8c6c5;
-        border-radius: 12px;
-        background: #f9fcfb;
+        border: 1px dashed #bcc7c7;
+        border-radius: 10px;
         color: var(--muted);
-        padding: 24px 12px;
+        background: var(--card);
+        padding: 18px 12px;
         text-align: center;
       }
 
-      @media (max-width: 780px) {
-        .control-grid {
+      @media (max-width: 700px) {
+        .controls {
           grid-template-columns: 1fr 1fr;
         }
 
-        .btn {
+        button {
           grid-column: span 2;
         }
       }
     </style>
   </head>
   <body>
-    <main class="shell">
-      <header class="hero">
-        <p class="kicker">London Tasteful Events</p>
-        <h1>Browse Organizations</h1>
-        <p class="sub">Utility-first directory for event-source organizations. Open events pages in a new tab.</p>
-      </header>
+    <main>
+      <h1>London Tasteful Events</h1>
 
       <section class="controls">
-        <div class="control-grid">
-          <div class="field">
-            <label for="category-filter">Category</label>
-            <select id="category-filter"></select>
-          </div>
-          <div class="field">
-            <label for="borough-filter">Borough</label>
-            <select id="borough-filter"></select>
-          </div>
-          <button class="btn" id="clear-filters" type="button">Clear</button>
-        </div>
+        <select id="category-filter"></select>
+        <select id="borough-filter"></select>
+        <button id="clear-filters" type="button">Clear</button>
       </section>
 
-      <section class="results" id="results"></section>
+      <section id="results"></section>
     </main>
 
     <script>
@@ -252,6 +140,11 @@
         results: document.getElementById("results"),
       };
 
+      function clean(value, fallback = "") {
+        const text = String(value ?? "").trim();
+        return text || fallback;
+      }
+
       function escapeHtml(value) {
         return String(value ?? "")
           .replace(/&/g, "&amp;")
@@ -259,11 +152,6 @@
           .replace(/>/g, "&gt;")
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
-      }
-
-      function clean(value, fallback = "") {
-        const text = String(value ?? "").trim();
-        return text || fallback;
       }
 
       function titleCase(value) {
@@ -274,18 +162,17 @@
           .join(" ");
       }
 
-      function uniqueValues(items, key) {
+      function uniqueValues(items, key, fallback) {
         const values = new Set();
         for (const item of items) {
-          const value = clean(item[key], key === "borough" ? "Unspecified" : "other");
-          values.add(value);
+          values.add(clean(item[key], fallback));
         }
         return Array.from(values).sort((a, b) => a.localeCompare(b));
       }
 
       function writeFilterOptions() {
-        const categories = uniqueValues(allOrgs, "category");
-        const boroughs = uniqueValues(allOrgs, "borough");
+        const categories = uniqueValues(allOrgs, "category", "other");
+        const boroughs = uniqueValues(allOrgs, "borough", "Unspecified");
 
         els.category.innerHTML = `<option value="all">All categories</option>${categories
           .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(titleCase(item))}</option>`)
@@ -296,110 +183,47 @@
           .join("")}`;
       }
 
-      function filterOrgs() {
-        return allOrgs.filter((org) => {
+      function filteredOrgs() {
+        const list = allOrgs.filter((org) => {
           const category = clean(org.category, "other");
           const borough = clean(org.borough, "Unspecified");
-
-          if (ui.category !== "all" && category !== ui.category) return false;
-          if (ui.borough !== "all" && borough !== ui.borough) return false;
+          if (ui.category !== "all" && ui.category !== category) return false;
+          if (ui.borough !== "all" && ui.borough !== borough) return false;
           return true;
         });
+
+        list.sort((a, b) => clean(a.name).localeCompare(clean(b.name)));
+        return list;
       }
 
-      function groupOrgs(orgs) {
-        const categories = new Map();
-
-        for (const org of orgs) {
-          const category = clean(org.category, "other");
-          const borough = clean(org.borough, "Unspecified");
-
-          if (!categories.has(category)) categories.set(category, new Map());
-          const boroughs = categories.get(category);
-          if (!boroughs.has(borough)) boroughs.set(borough, []);
-          boroughs.get(borough).push(org);
-        }
-
-        for (const boroughs of categories.values()) {
-          for (const list of boroughs.values()) {
-            list.sort((a, b) => clean(a.name).localeCompare(clean(b.name)));
-          }
-        }
-
-        return categories;
-      }
-
-      function renderOrgRow(org) {
-        const name = clean(org.name, "Unnamed");
-        const category = clean(org.category, "other");
-        const borough = clean(org.borough, "Unspecified");
-        const eventsUrl = clean(org.events_url);
-
-        const nameMarkup = eventsUrl
-          ? `<a href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(name)}</a>`
-          : escapeHtml(name);
-
-        return `
-          <div class="org-row">
-            <p class="org-name">${nameMarkup}</p>
-            <div class="org-meta">${escapeHtml(titleCase(category))} • ${escapeHtml(borough)}</div>
-          </div>
-        `;
-      }
-
-      function renderResults() {
-        const filtered = filterOrgs();
-
-        if (!filtered.length) {
-          els.results.innerHTML = `<div class="empty">No organizations match the current filters.</div>`;
+      function render() {
+        const rows = filteredOrgs();
+        if (!rows.length) {
+          els.results.innerHTML = `<div class="empty">No organizations match the filters.</div>`;
           return;
         }
 
-        const grouped = groupOrgs(filtered);
-        const categoryKeys = Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b));
-
-        const html = categoryKeys
-          .map((category) => {
-            const boroughMap = grouped.get(category);
-            const boroughKeys = Array.from(boroughMap.keys()).sort((a, b) => a.localeCompare(b));
-            const categoryCount = boroughKeys.reduce((acc, borough) => acc + boroughMap.get(borough).length, 0);
-
-            const boroughHtml = boroughKeys
-              .map((borough) => {
-                const rows = boroughMap.get(borough);
-                return `
-                  <section class="borough-block">
-                    <h3 class="borough-head">${escapeHtml(borough)} (${escapeHtml(rows.length)})</h3>
-                    ${rows.map((org) => renderOrgRow(org)).join("")}
-                  </section>
-                `;
-              })
-              .join("");
-
-            return `
-              <section class="category-block">
-                <header class="category-head">
-                  <h2>${escapeHtml(titleCase(category))}</h2>
-                  <span class="count">${escapeHtml(categoryCount)} orgs</span>
-                </header>
-                ${boroughHtml}
-              </section>
-            `;
+        const items = rows
+          .map((org) => {
+            const name = clean(org.name, "Unnamed");
+            const eventsUrl = clean(org.events_url);
+            if (!eventsUrl) return `<li><span>${escapeHtml(name)}</span></li>`;
+            return `<li><a href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(name)}</a></li>`;
           })
           .join("");
 
-        els.results.innerHTML = html;
+        els.results.innerHTML = `<ul class="list">${items}</ul>`;
       }
 
       function wireEvents() {
         els.category.addEventListener("change", (event) => {
           ui.category = event.target.value || "all";
-          renderResults();
+          render();
         });
 
         els.borough.addEventListener("change", (event) => {
           ui.borough = event.target.value || "all";
-          renderResults();
+          render();
         });
 
         els.clear.addEventListener("click", () => {
@@ -407,13 +231,13 @@
           ui.borough = "all";
           els.category.value = "all";
           els.borough.value = "all";
-          renderResults();
+          render();
         });
       }
 
       writeFilterOptions();
       wireEvents();
-      renderResults();
+      render();
     </script>
   </body>
 </html>
