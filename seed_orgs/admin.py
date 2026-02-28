@@ -464,8 +464,15 @@ def bulk_add():
     return jsonify({"ok": True, "count": len(ids), "ids": ids})
 
 
+@app.route("/healthz")
+def healthz():
+    init_db()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/stats")
 def stats():
+    init_db()
     return jsonify(get_stats())
 
 

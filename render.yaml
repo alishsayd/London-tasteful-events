@@ -10,7 +10,7 @@ services:
     runtime: python
     plan: starter
     autoDeploy: true
-    healthCheckPath: /api/stats
+    healthCheckPath: /healthz
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn seed_orgs.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4
     envVars:
