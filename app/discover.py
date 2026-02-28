@@ -99,6 +99,8 @@ CATEGORIES = [
 AGGREGATOR_QUERIES = [
     "site:ianvisits.co.uk London free art talk",
     "site:ianvisits.co.uk London gallery events",
+    "site:lectures.london London lectures",
+    "site:lectures.london London talks",
     "Open House London participating venues",
     "London independent gallery events programme",
     "London independent cinema whats on",
@@ -135,6 +137,17 @@ BLOCKED_DOMAINS = {
     "eventbrite.com",
     "meetup.com",
     "timeout.com",
+}
+
+AGGREGATOR_SOURCE_DOMAINS = {
+    "ianvisits.co.uk",
+    "lectures.london",
+}
+
+# Domains that are useful for discovery seeding but should never be persisted as org entities.
+NON_ENTITY_SOURCE_DOMAINS = {
+    "ianvisits.co.uk",
+    "lectures.london",
 }
 
 BOROUGH_ALIASES = {
@@ -486,6 +499,58 @@ def _search_duckduckgo(query: str, max_results: int, timeout: int) -> list[str]:
     return urls
 
 
+def _expand_from_aggregator(url: str, timeout: int, max_results: int) -> list[str]:
+    response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+    response.raise_for_status()
+
+    if not _looks_like_html_response(response):
+        return []
+
+    page_url = response.url
+    source_domain = _domain(page_url) or _domain(url)
+    if source_domain not in AGGREGATOR_SOURCE_DOMAINS:
+        return []
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    scored: list[tuple[int, str]] = []
+    seen: set[str] = set()
+
+    for anchor in soup.select("a[href]"):
+        href = str(anchor.get("href") or "").strip()
+        if not href:
+            continue
+
+        resolved = urljoin(page_url, href)
+        if _should_skip_url(resolved):
+            continue
+
+        target_domain = _domain(resolved)
+        if not target_domain or target_domain == source_domain:
+            continue
+        if target_domain in BLOCKED_DOMAINS:
+            continue
+
+        key = resolved.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        path = (urlparse(resolved).path or "").lower()
+        anchor_text = _clean_text(anchor.get_text(" ", strip=True)).lower()
+        score = 0
+        if any(hint in path for hint in EVENT_URL_HINTS):
+            score += 4
+        if any(hint in anchor_text for hint in ("event", "what's on", "what’s on", "programme", "program", "calendar", "talk")):
+            score += 3
+        if "london" in path or "london" in anchor_text:
+            score += 2
+
+        scored.append((score, resolved))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [url for _, url in scored[:max_results]]
+
+
 def _extract_title_and_description(soup: BeautifulSoup) -> tuple[str, str]:
     title_tag = soup.find("title")
     title = _clean_text(title_tag.get_text(" ", strip=True) if title_tag else "")
@@ -621,6 +686,10 @@ def _is_london_related(text_blob: str) -> bool:
 def _extract_org_candidate(url: str, timeout: int) -> dict[str, Any] | None:
     response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
     response.raise_for_status()
+
+    resolved_domain = _domain(response.url)
+    if resolved_domain in NON_ENTITY_SOURCE_DOMAINS:
+        return None
 
     if not _looks_like_html_response(response):
         return None
@@ -1018,6 +1087,7 @@ def run_discovery_cycle(
 
     query_errors = 0
     searched_urls: list[str] = []
+    aggregator_seed_urls: list[str] = []
     seen_urls: set[str] = set()
     seen_domains: set[str] = set()
 
@@ -1041,10 +1111,39 @@ def run_discovery_cycle(
                     continue
                 seen_urls.add(key)
                 seen_domains.add(domain)
-                searched_urls.append(url)
+                if domain in AGGREGATOR_SOURCE_DOMAINS:
+                    aggregator_seed_urls.append(url)
+                else:
+                    searched_urls.append(url)
 
             if len(searched_urls) >= max_candidates * 2:
                 break
+
+        for seed_url in aggregator_seed_urls:
+            if len(searched_urls) >= max_candidates * 2:
+                break
+
+            try:
+                expanded = _expand_from_aggregator(seed_url, timeout=request_timeout, max_results=max_results_per_query * 5)
+            except Exception:
+                continue
+
+            for url in expanded:
+                if _should_skip_url(url):
+                    continue
+                key = url.lower().strip()
+                if key in seen_urls:
+                    continue
+                domain = _domain(url)
+                if not domain or domain in seen_domains:
+                    continue
+
+                seen_urls.add(key)
+                seen_domains.add(domain)
+                searched_urls.append(url)
+
+                if len(searched_urls) >= max_candidates * 2:
+                    break
 
         candidates: list[dict[str, Any]] = []
         for url in searched_urls:

@@ -536,14 +536,6 @@
     "category": "bookshop events"
   },
   {
-    "name": "Lectures London",
-    "homepage": "https://lectures.london/",
-    "events_url": "https://lectures.london/",
-    "description": "Aggregator listing free lectures across London. Cities, AI, philosophy, history, science and more.",
-    "borough": null,
-    "category": "lecture series"
-  },
-  {
     "name": "The RSA",
     "homepage": "https://www.thersa.org/",
     "events_url": "https://www.thersa.org/events",
