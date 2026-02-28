@@ -574,42 +574,6 @@ def get_org(org_id: int) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
-def get_orgs(status: str | None = None, borough: str | None = None, category: str | None = None) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        query = "SELECT * FROM orgs WHERE 1=1"
-        params: dict[str, Any] = {}
-
-        if status:
-            query += " AND status = :status"
-            params["status"] = status
-        if borough:
-            query += " AND borough = :borough"
-            params["borough"] = borough
-        if category:
-            query += " AND category = :category"
-            params["category"] = category
-
-        query += " ORDER BY created_at DESC, id DESC"
-        rows = conn.execute(text(query), params).mappings().all()
-        return [dict(row) for row in rows]
-
-
-def update_org_status(org_id: int, status: str, notes: str | None = None) -> None:
-    with get_db() as conn:
-        conn.execute(
-            text(
-                """
-                UPDATE orgs
-                SET status = :status,
-                    notes = :notes,
-                    reviewed_at = CASE WHEN :status = 'pending' THEN NULL ELSE CURRENT_TIMESTAMP END
-                WHERE id = :org_id
-                """
-            ),
-            {"status": status, "notes": notes, "org_id": org_id},
-        )
-
-
 def update_org(org_id: int, **fields: Any) -> None:
     allowed = {
         "name",

@@ -19,7 +19,6 @@ from seed_orgs.db import (
     get_codex_queue_orgs,
     get_codex_strategies,
     get_org,
-    get_orgs,
     get_stats,
     init_db,
     set_codex_strategy_active,
@@ -145,11 +144,6 @@ def codex_redirect():
     return redirect("/", code=302)
 
 
-@app.route("/api/orgs/<int:org_id>", methods=["PATCH"])
-def patch_org(org_id):
-    data = request.json or {}
-    update_org(org_id, **data)
-    return jsonify({"ok": True})
 
 
 @app.route("/api/orgs", methods=["POST"])
@@ -312,10 +306,6 @@ def codex_review_org(org_id):
     )
 
 
-@app.route("/api/codex/next-batch", methods=["POST"])
-def codex_next_batch():
-    # Legacy endpoint kept for compatibility; queue is now rolling and unbatched.
-    return jsonify({"ok": True, "state": _state_payload()})
 
 
 @app.route("/api/codex/strategies", methods=["GET", "POST"])

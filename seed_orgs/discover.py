@@ -14,7 +14,6 @@ Usage:
 import argparse
 import json
 import sys
-import os
 
 from seed_orgs.db import init_db, upsert_org, get_stats
 
@@ -131,27 +130,6 @@ def import_from_file(filepath):
         count += 1
 
     print(f"Imported {count} orgs from {filepath}")
-
-
-def import_from_search_results(results_file):
-    """Import orgs from a search results JSON file.
-
-    This is for when you run searches externally (e.g. via Claude web search)
-    and save the structured results. Expected format:
-
-    [
-        {
-            "name": "Org Name",
-            "homepage": "https://...",
-            "events_url": "https://.../events",
-            "description": "Short description",
-            "borough": "Hackney",
-            "category": "gallery"
-        },
-        ...
-    ]
-    """
-    import_from_file(results_file)  # same format
 
 
 def print_queries(queries):

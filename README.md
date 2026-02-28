@@ -1,46 +1,45 @@
-# London-tasteful-events
+# London Tasteful Events
 
-Admin backend for curating London organizations before event extraction.
+Stateful admin backend for curating London organizations before event extraction.
 
-## What runs where
+## Runtime
 
-- **Primary app (stateful):** Flask admin + API with Postgres (deploy on Render)
-- **Optional static pages:** GitHub Pages files at `/`, `/codex-curation-console.html`, `/claude-review.html`
+- App: Flask + SQLAlchemy (`seed_orgs`)
+- Database: PostgreSQL in production (`DATABASE_URL`), SQLite locally by default
+- Deployment: Render (`render.yaml`)
 
-## Local development
+## Local Development
 
-1. Create and activate a virtual environment.
-2. Install dependencies:
-   - `pip install -r requirements.txt`
-3. Run the admin server:
-   - `python -m seed_orgs.admin`
-4. Open:
-   - `http://127.0.0.1:5000/review` (Claude review flow)
-   - `http://127.0.0.1:5000/codex` (Codex persistent queue)
+1. `python3 -m venv .venv && source .venv/bin/activate`
+2. `pip install -r requirements.txt`
+3. `python -m seed_orgs.admin`
+4. Open `http://127.0.0.1:5000/`
 
-By default local runs use SQLite file `orgs.db`.
+Default local DB file: `orgs.db` (created automatically).
 
-## Production environment variables
+## Environment Variables
 
-- `DATABASE_URL` (required in production)
-- `AUTO_SEED_ORGS` (`true` by default; seeds from `seed_data.json` if DB is empty)
+- `DATABASE_URL`: required in production
+- `AUTO_SEED_ORGS`: defaults to `true`; seeds from `seed_data.json` when DB is empty
 
-## Deployment (Render)
+## Deploy (Render)
 
-This repository includes a Render blueprint at `render.yaml`:
-
+- Blueprint: `render.yaml`
 - Web service: `london-tasteful-events-admin`
-- Postgres database: `london-tasteful-events-db`
+- Health check: `GET /healthz`
+- Start command: `gunicorn seed_orgs.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
 
-Start command:
-
-- `gunicorn seed_orgs.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
-
-## API endpoints (core)
+## API (Current)
 
 - `GET /api/codex/state`
 - `POST /api/codex/review/<org_id>`
-- `POST /api/codex/next-batch`
 - `GET|POST /api/codex/strategies`
 - `PATCH /api/codex/strategies/<strategy_id>`
-- `POST /api/orgs` (manual org add)
+- `POST /api/orgs`
+- `POST /api/orgs/bulk`
+- `GET /api/stats`
+- `GET /export`
+
+## Collaboration
+
+See [`docs/parallel-collaboration.md`](docs/parallel-collaboration.md) for branch naming and file ownership boundaries to reduce merge conflicts when Codex and Claude work in parallel.
