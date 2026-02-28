@@ -426,6 +426,16 @@ def _unwrap_duckduckgo_href(href: str) -> str | None:
         href = f"https:{href}"
 
     parsed = urlparse(href)
+    # DuckDuckGo often returns relative redirect links such as `/l/?uddg=...`.
+    if not parsed.netloc and parsed.path.startswith("/l/"):
+        query = parse_qs(parsed.query)
+        if "uddg" in query and query["uddg"]:
+            target = unquote(query["uddg"][0])
+            target_parsed = urlparse(target)
+            if target_parsed.scheme in {"http", "https"}:
+                return target
+        return None
+
     if "duckduckgo.com" not in (parsed.netloc or ""):
         return href if parsed.scheme in {"http", "https"} else None
 
@@ -519,6 +529,47 @@ def _extract_output_text_from_response(payload: dict[str, Any]) -> str:
                     chunks.append(text)
 
     return "\n".join(chunks).strip()
+
+
+def _extract_urls_from_annotations(payload: dict[str, Any], max_results: int) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def _walk(value: Any) -> None:
+        if len(urls) >= max_results:
+            return
+        if isinstance(value, dict):
+            annotations = value.get("annotations")
+            if isinstance(annotations, list):
+                for annotation in annotations:
+                    if not isinstance(annotation, dict):
+                        continue
+                    direct_url = annotation.get("url")
+                    nested_url = None
+                    nested = annotation.get("url_citation")
+                    if isinstance(nested, dict):
+                        nested_url = nested.get("url")
+                    for candidate in (direct_url, nested_url):
+                        if not isinstance(candidate, str):
+                            continue
+                        if _should_skip_url(candidate):
+                            continue
+                        key = candidate.lower().strip()
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        urls.append(candidate)
+                        if len(urls) >= max_results:
+                            return
+            for item in value.values():
+                _walk(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    _walk(payload)
+    return urls
 
 
 def _extract_urls_from_text_blob(text_blob: str, max_results: int) -> list[str]:
@@ -631,11 +682,10 @@ def _search_openai_web(query: str, max_results: int, timeout: int) -> list[str]:
     external_web_access = _env_bool("DISCOVERY_OPENAI_EXTERNAL_WEB_ACCESS", True)
 
     prompt = (
-        "Use web search and return JSON only.\n"
-        f"Find London organisation entities relevant to query: {query}\n"
+        f"Use web search to find London organisation entities for query: {query}\n"
         "Keep only institution entities (museum, gallery, cultural centre/institute/house, community arts venue).\n"
         "Exclude aggregator/directory/article/listicle pages and one-off program pages.\n"
-        f"Return JSON object with key \"urls\": array of at most {max_results} unique absolute URLs."
+        f"Return up to {max_results} unique absolute URLs."
     )
 
     payload = {
@@ -654,7 +704,6 @@ def _search_openai_web(query: str, max_results: int, timeout: int) -> list[str]:
                 },
             }
         ],
-        "text": {"format": {"type": "json_object"}},
         "max_output_tokens": 700,
         "include": ["web_search_call.action.sources"],
     }
@@ -671,11 +720,17 @@ def _search_openai_web(query: str, max_results: int, timeout: int) -> list[str]:
     response.raise_for_status()
 
     response_payload: dict[str, Any] = response.json()
+    from_sources = _extract_urls_from_web_sources(response_payload, max_results=max_results)
+    if from_sources:
+        return from_sources
+    from_annotations = _extract_urls_from_annotations(response_payload, max_results=max_results)
+    if from_annotations:
+        return from_annotations
     response_text = _extract_output_text_from_response(response_payload)
     from_text = _extract_urls_from_text_blob(response_text, max_results=max_results)
     if from_text:
         return from_text
-    return _extract_urls_from_web_sources(response_payload, max_results=max_results)
+    return []
 
 
 def _search_web(query: str, max_results: int, timeout: int, provider: str) -> list[str]:
@@ -1292,6 +1347,7 @@ def run_discovery_cycle(
     query_errors = 0
     searched_urls: list[str] = []
     aggregator_seed_urls: list[str] = []
+    query_debug: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     seen_domains: set[str] = set()
 
@@ -1308,6 +1364,15 @@ def run_discovery_cycle(
             except Exception:
                 query_errors += 1
                 continue
+
+            if len(query_debug) < 12:
+                query_debug.append(
+                    {
+                        "query": query,
+                        "result_count": len(results),
+                        "sample_urls": results[:3],
+                    }
+                )
 
             for url in results:
                 if _should_skip_url(url):
@@ -1393,6 +1458,7 @@ def run_discovery_cycle(
             "upserted_count": upserted_count,
             "dry_run": dry_run,
             "search_provider": search_provider,
+            "query_debug": query_debug,
         }
         finish_discovery_run(
             run_id,
