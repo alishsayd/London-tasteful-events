@@ -34,6 +34,9 @@ from seed_orgs.db import (
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
+# Ensure schema exists when running under WSGI/Gunicorn (main() is not executed there).
+init_db()
+
 BATCH_SIZE_DEFAULT = 20
 
 BOROUGHS = {
