@@ -212,16 +212,28 @@
         return Array.from(values).sort((a, b) => a.localeCompare(b));
       }
 
+      function countBy(items, key, fallback) {
+        const counts = {};
+        for (const item of items) {
+          const val = clean(item[key], fallback);
+          counts[val] = (counts[val] || 0) + 1;
+        }
+        return counts;
+      }
+
       function writeFilterOptions() {
         const categories = uniqueValues(allOrgs, "category", "other");
         const boroughs = uniqueValues(allOrgs, "borough", "Unspecified");
+        const catCounts = countBy(allOrgs, "category", "other");
+        const borCounts = countBy(allOrgs, "borough", "Unspecified");
+        const total = allOrgs.length;
 
-        els.category.innerHTML = `<option value="all">All categories</option>${categories
-          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(titleCase(item))}</option>`)
+        els.category.innerHTML = `<option value="all">All categories (${total})</option>${categories
+          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(titleCase(item))} (${catCounts[item] || 0})</option>`)
           .join("")}`;
 
-        els.borough.innerHTML = `<option value="all">All boroughs</option>${boroughs
-          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`)
+        els.borough.innerHTML = `<option value="all">All boroughs (${total})</option>${boroughs
+          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)} (${borCounts[item] || 0})</option>`)
           .join("")}`;
       }
 

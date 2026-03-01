@@ -66,6 +66,8 @@ const ui = {
   isBusy: false,
   queueDrafts: {},
   strategyDraft: "",
+  activeFilterCategory: "",
+  activeFilterBorough: "",
   manualDraft: {
     name: "",
     homepage: "",
@@ -491,7 +493,37 @@ function renderQueue() {
 }
 
 function renderActive() {
-  const rows = (state.active_orgs || [])
+  const activeOrgs = state.active_orgs || [];
+  const total = activeOrgs.length;
+
+  // Count orgs per category and borough
+  const byCat = {};
+  const byBor = {};
+  for (const item of activeOrgs) {
+    const cat = item.category || "other";
+    const bor = item.borough || "unknown";
+    byCat[cat] = (byCat[cat] || 0) + 1;
+    byBor[bor] = (byBor[bor] || 0) + 1;
+  }
+
+  const catOptions = Object.entries(byCat)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, count]) => `<option value="${escapeHtml(name)}" ${ui.activeFilterCategory === name ? "selected" : ""}>${escapeHtml(name)} (${count})</option>`)
+    .join("");
+
+  const borOptions = Object.entries(byBor)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, count]) => `<option value="${escapeHtml(name)}" ${ui.activeFilterBorough === name ? "selected" : ""}>${escapeHtml(name)} (${count})</option>`)
+    .join("");
+
+  // Filter rows
+  const filtered = activeOrgs.filter((item) => {
+    if (ui.activeFilterCategory && (item.category || "other") !== ui.activeFilterCategory) return false;
+    if (ui.activeFilterBorough && (item.borough || "unknown") !== ui.activeFilterBorough) return false;
+    return true;
+  });
+
+  const rows = filtered
     .map(
       (item) => {
         const isOpenIssue = String(item.issue_state || "") === "open";
@@ -522,6 +554,17 @@ function renderActive() {
         </div>
         <button class="primary-btn" data-action="go-add-org" ${ui.isBusy ? "disabled" : ""}>Add org</button>
       </header>
+
+      <div class="active-filters">
+        <select data-action="active-filter-category">
+          <option value="" ${!ui.activeFilterCategory ? "selected" : ""}>All categories (${total})</option>
+          ${catOptions}
+        </select>
+        <select data-action="active-filter-borough">
+          <option value="" ${!ui.activeFilterBorough ? "selected" : ""}>All boroughs (${total})</option>
+          ${borOptions}
+        </select>
+      </div>
 
       <div class="table-wrap">
         <table class="flat-table">
@@ -825,6 +868,23 @@ app.addEventListener("click", async (event) => {
 
   if (action === "queue-from-active") {
     await moveActiveOrgToQueue(Number(target.dataset.id));
+  }
+});
+
+app.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+
+  if (target.dataset.action === "active-filter-category") {
+    ui.activeFilterCategory = target.value;
+    render();
+    return;
+  }
+
+  if (target.dataset.action === "active-filter-borough") {
+    ui.activeFilterBorough = target.value;
+    render();
+    return;
   }
 });
 

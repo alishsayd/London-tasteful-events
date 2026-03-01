@@ -599,6 +599,20 @@ textarea:focus {
   min-width: 0;
 }
 
+.active-filters {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.active-filters select {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 140px;
+  max-width: 240px;
+}
+
 .table-wrap {
   margin-top: 12px;
   overflow: auto;
@@ -610,7 +624,7 @@ textarea:focus {
 .flat-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 920px;
+  min-width: 540px;
 }
 
 .flat-table th,
