@@ -244,12 +244,12 @@ def _max_dt(left, right):
 def _description_template(row: dict[str, Any]) -> str:
     name = str(row.get("name") or "This venue").strip()
     borough = str(row.get("borough") or "").strip()
-    category = str(row.get("category") or "cultural venue").strip()
+    org_type = _display_org_type(row.get("org_type"))
 
-    if borough and category:
-        return f"{name} is a London {category} in {borough}."
-    if category:
-        return f"{name} is a London {category}."
+    if borough and org_type:
+        return f"{name} is a London {org_type} in {borough}."
+    if org_type:
+        return f"{name} is a London {org_type}."
     if borough:
         return f"{name} is a cultural venue in {borough}, London."
     return f"{name} is a London cultural venue."
@@ -326,6 +326,117 @@ CATEGORY_NORMALIZATION_MAP = {
     "cultural centers": "Cultural centers",
 }
 
+PRIMARY_TYPE_VALUES = ("venue", "institution", "organisation")
+
+ORG_TYPE_VALUES = (
+    "bookshop",
+    "cinema",
+    "gallery",
+    "live_music_venue",
+    "theatre",
+    "museum",
+    "makers_space",
+    "park",
+    "garden",
+    "cultural_centre",
+    "university",
+    "learned_society",
+    "organisation",
+)
+
+VENUE_ORG_TYPES = {
+    "bookshop",
+    "cinema",
+    "gallery",
+    "live_music_venue",
+    "theatre",
+    "museum",
+    "makers_space",
+    "park",
+    "garden",
+}
+
+INSTITUTION_ORG_TYPES = {"cultural_centre", "university", "learned_society"}
+
+ORG_TYPE_LABELS = {
+    "bookshop": "Bookshop",
+    "cinema": "Cinema",
+    "gallery": "Gallery",
+    "live_music_venue": "Live music venue",
+    "theatre": "Theatre",
+    "museum": "Museum",
+    "makers_space": "Makers space",
+    "park": "Park",
+    "garden": "Garden",
+    "cultural_centre": "Cultural centre",
+    "university": "University",
+    "learned_society": "Learned society",
+    "organisation": "Organisation",
+}
+
+LEGACY_CATEGORY_TO_ORG_TYPE: dict[str, str] = {
+    "bookshops": "bookshop",
+    "bookshop": "bookshop",
+    "bookshop events": "bookshop",
+    "cinema": "cinema",
+    "community cinema": "cinema",
+    "gallery": "gallery",
+    "live music venue": "live_music_venue",
+    "makers space": "makers_space",
+    "makerspace": "makers_space",
+    "workshop space": "makers_space",
+    "museum": "museum",
+    "park": "park",
+    "garden": "garden",
+    "theatre": "theatre",
+    "education": "__education__",
+    "lecture series": "__education__",
+    "lecture venue": "__education__",
+    "cultural centers": "__cultural__",
+    "cultural centre": "__cultural__",
+    "cultural center": "__cultural__",
+    "cultural centres": "__cultural__",
+    "social community center": "__cultural__",
+    "social community centre": "__cultural__",
+    "community space": "__cultural__",
+    "poetry readings": "__poetry__",
+    "one off event": "__one_off__",
+    "one-off event": "__one_off__",
+    "one_off_event": "__one_off__",
+    "one-off_event": "__one_off__",
+    "other": "__other__",
+}
+
+UNIVERSITY_NAME_HINTS = (
+    "university",
+    "college",
+    "soas",
+    "lse",
+    "imperial",
+)
+
+LEARNED_SOCIETY_NAME_HINTS = (
+    "society",
+    "institute",
+    "royal",
+    "gresham",
+    "rsa",
+)
+
+CULTURAL_CENTRE_NAME_HINTS = (
+    "arts centre",
+    "arts center",
+    "cultural centre",
+    "cultural center",
+    "japan house",
+    "foundation",
+    "cervantes",
+    "goethe",
+    "institut",
+    "istituto",
+    "alliance",
+)
+
 LOW_TRUST_SOURCE_DOMAIN_SUFFIXES = (
     "wikipedia.org",
     "linkedin.com",
@@ -360,6 +471,107 @@ def _domain_matches_suffix(value: str | None, suffixes: tuple[str, ...]) -> bool
 def _normalize_category_value(value: str | None) -> str:
     normalized = _normalize_name(value)
     return normalized.replace("  ", " ").strip()
+
+
+def _normalize_org_type(value: str | None) -> str:
+    normalized = _normalize_name(value).replace(" ", "_")
+    return normalized.strip("_")
+
+
+def _normalize_primary_type(value: str | None) -> str:
+    normalized = _normalize_name(value).replace(" ", "_")
+    return normalized.strip("_")
+
+
+def _display_org_type(value: str | None) -> str:
+    org_type = _normalize_org_type(value)
+    if org_type in ORG_TYPE_LABELS:
+        return ORG_TYPE_LABELS[org_type]
+    return "Cultural venue"
+
+
+def _primary_type_for_org_type(org_type: str | None) -> str:
+    normalized = _normalize_org_type(org_type)
+    if normalized in VENUE_ORG_TYPES:
+        return "venue"
+    if normalized in INSTITUTION_ORG_TYPES:
+        return "institution"
+    return "organisation"
+
+
+def _contains_any(value: str, hints: tuple[str, ...]) -> bool:
+    return any(hint in value for hint in hints)
+
+
+def _infer_org_type_from_name(name: str | None) -> str:
+    name_norm = _normalize_name(name)
+    if not name_norm:
+        return "organisation"
+
+    if _contains_any(name_norm, UNIVERSITY_NAME_HINTS):
+        return "university"
+    if _contains_any(name_norm, LEARNED_SOCIETY_NAME_HINTS):
+        return "learned_society"
+    if _contains_any(name_norm, ("bookshop", "bookstore", "books")):
+        return "bookshop"
+    if _contains_any(name_norm, ("cinema", "film")):
+        return "cinema"
+    if "gallery" in name_norm:
+        return "gallery"
+    if _contains_any(name_norm, ("museum", "heritage")):
+        return "museum"
+    if _contains_any(name_norm, ("theatre", "theater")):
+        return "theatre"
+    if _contains_any(name_norm, ("makerspace", "maker space", "workshop", "studio")):
+        return "makers_space"
+    if "park" in name_norm:
+        return "park"
+    if _contains_any(name_norm, ("garden", "conservatory")):
+        return "garden"
+    if _contains_any(name_norm, ("music", "jazz", "orchestra")):
+        return "live_music_venue"
+    if _contains_any(name_norm, CULTURAL_CENTRE_NAME_HINTS):
+        return "cultural_centre"
+    return "organisation"
+
+
+def _resolve_org_type(
+    *,
+    name: str | None,
+    org_type: str | None = None,
+    category: str | None = None,
+) -> str:
+    explicit = _normalize_org_type(org_type)
+    legacy_key = _normalize_category_value(category)
+
+    if explicit in ORG_TYPE_VALUES and explicit != "organisation":
+        return explicit
+    if explicit == "organisation" and not legacy_key:
+        return explicit
+
+    mapped = LEGACY_CATEGORY_TO_ORG_TYPE.get(legacy_key)
+    inferred = _infer_org_type_from_name(name)
+
+    if mapped and not mapped.startswith("__"):
+        return mapped
+    if mapped == "__education__":
+        if inferred in {"university", "learned_society"}:
+            return inferred
+        return "learned_society"
+    if mapped == "__cultural__":
+        if inferred in {"university", "learned_society"}:
+            return inferred
+        return "cultural_centre"
+    if mapped == "__poetry__":
+        if inferred in {"bookshop", "theatre", "gallery", "live_music_venue"}:
+            return inferred
+        return "organisation"
+    if mapped in {"__one_off__", "__other__"}:
+        return inferred if inferred != "organisation" else "organisation"
+
+    if inferred in ORG_TYPE_VALUES:
+        return inferred
+    return "organisation"
 
 
 def _is_low_trust_source_domain(value: str | None) -> bool:
@@ -434,6 +646,18 @@ def _enrich_row_fields(row: dict[str, Any]) -> dict[str, Any]:
     if description != (row.get("description") or "").strip():
         updates["description"] = description
 
+    resolved_org_type = _resolve_org_type(
+        name=row.get("name"),
+        org_type=row.get("org_type"),
+        category=row.get("category"),
+    )
+    if _normalize_org_type(row.get("org_type")) != resolved_org_type:
+        updates["org_type"] = resolved_org_type
+
+    resolved_primary_type = _primary_type_for_org_type(resolved_org_type)
+    if _normalize_primary_type(row.get("primary_type")) != resolved_primary_type:
+        updates["primary_type"] = resolved_primary_type
+
     issue_state = str(row.get("issue_state") or "none")
     events_url = str(row.get("events_url") or "").strip()
     if not events_url:
@@ -474,7 +698,18 @@ def _merge_group(conn, group_rows: list[dict[str, Any]]) -> None:
     merged = dict(primary)
 
     for candidate in ordered[1:]:
-        for key in ("homepage", "events_url", "borough", "category", "source", "source_domain", "review_needed_reason"):
+        for key in (
+            "homepage",
+            "events_url",
+            "borough",
+            "category",
+            "org_type",
+            "primary_type",
+            "parent_org_id",
+            "source",
+            "source_domain",
+            "review_needed_reason",
+        ):
             if not str(merged.get(key) or "").strip() and str(candidate.get(key) or "").strip():
                 merged[key] = candidate.get(key)
 
@@ -504,6 +739,13 @@ def _merge_group(conn, group_rows: list[dict[str, Any]]) -> None:
     if not str(merged.get("source_domain") or "").strip():
         merged["source_domain"] = _domain_from_url(merged.get("homepage")) or _domain_from_url(merged.get("events_url"))
 
+    merged["org_type"] = _resolve_org_type(
+        name=merged.get("name"),
+        org_type=merged.get("org_type"),
+        category=merged.get("category"),
+    )
+    merged["primary_type"] = _primary_type_for_org_type(merged.get("org_type"))
+
     merged["description"] = _best_description(merged.get("description"), None, merged)
 
     if not str(merged.get("events_url") or "").strip():
@@ -517,6 +759,9 @@ def _merge_group(conn, group_rows: list[dict[str, Any]]) -> None:
         "description": merged.get("description"),
         "borough": merged.get("borough"),
         "category": merged.get("category"),
+        "org_type": merged.get("org_type"),
+        "primary_type": merged.get("primary_type"),
+        "parent_org_id": merged.get("parent_org_id"),
         "source": merged.get("source"),
         "source_domain": merged.get("source_domain"),
         "notes": merged.get("notes"),
@@ -689,6 +934,11 @@ def init_db() -> None:
                     description TEXT,
                     borough TEXT,
                     category TEXT,
+                    primary_type TEXT NOT NULL DEFAULT 'organisation'
+                        CHECK(primary_type IN ('venue', 'institution', 'organisation')),
+                    org_type TEXT NOT NULL DEFAULT 'organisation'
+                        CHECK(org_type IN ('bookshop', 'cinema', 'gallery', 'live_music_venue', 'theatre', 'museum', 'makers_space', 'park', 'garden', 'cultural_centre', 'university', 'learned_society', 'organisation')),
+                    parent_org_id BIGINT,
                     source TEXT,
                     source_domain TEXT,
                     status TEXT NOT NULL DEFAULT 'pending'
@@ -703,7 +953,8 @@ def init_db() -> None:
                     consecutive_failures INTEGER NOT NULL DEFAULT 0,
                     consecutive_empty_extracts INTEGER NOT NULL DEFAULT 0,
                     issue_state TEXT NOT NULL DEFAULT 'none',
-                    review_needed_reason TEXT
+                    review_needed_reason TEXT,
+                    FOREIGN KEY (parent_org_id) REFERENCES orgs(id)
                 )
                 """
             )
@@ -718,6 +969,9 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS consecutive_empty_extracts INTEGER NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS issue_state TEXT NOT NULL DEFAULT 'none'"))
             conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS review_needed_reason TEXT"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS primary_type TEXT NOT NULL DEFAULT 'organisation'"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS org_type TEXT NOT NULL DEFAULT 'organisation'"))
+            conn.execute(text("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS parent_org_id BIGINT"))
         else:
             for statement in [
                 "ALTER TABLE orgs ADD COLUMN active BOOLEAN NOT NULL DEFAULT 1",
@@ -728,6 +982,9 @@ def init_db() -> None:
                 "ALTER TABLE orgs ADD COLUMN consecutive_empty_extracts INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE orgs ADD COLUMN issue_state TEXT NOT NULL DEFAULT 'none'",
                 "ALTER TABLE orgs ADD COLUMN review_needed_reason TEXT",
+                "ALTER TABLE orgs ADD COLUMN primary_type TEXT NOT NULL DEFAULT 'organisation'",
+                "ALTER TABLE orgs ADD COLUMN org_type TEXT NOT NULL DEFAULT 'organisation'",
+                "ALTER TABLE orgs ADD COLUMN parent_org_id INTEGER",
             ]:
                 try:
                     conn.execute(text(statement))
@@ -744,10 +1001,15 @@ def init_db() -> None:
         conn.execute(text("UPDATE orgs SET consecutive_failures = 0 WHERE consecutive_failures IS NULL"))
         conn.execute(text("UPDATE orgs SET consecutive_empty_extracts = 0 WHERE consecutive_empty_extracts IS NULL"))
         conn.execute(text("UPDATE orgs SET issue_state = 'none' WHERE issue_state IS NULL"))
+        conn.execute(text("UPDATE orgs SET org_type = 'organisation' WHERE org_type IS NULL OR trim(org_type) = ''"))
+        conn.execute(text("UPDATE orgs SET primary_type = 'organisation' WHERE primary_type IS NULL OR trim(primary_type) = ''"))
 
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_status ON orgs(status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_borough ON orgs(borough)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_category ON orgs(category)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_org_type ON orgs(org_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_primary_type ON orgs(primary_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_parent_org_id ON orgs(parent_org_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_source_domain ON orgs(source_domain)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_active ON orgs(active, crawl_paused)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_issue_state ON orgs(issue_state)"))
@@ -844,6 +1106,7 @@ def init_db() -> None:
 
     _bootstrap_if_empty()
     _dedupe_and_enrich()
+    normalize_org_taxonomy()
 
 
 def _resolve_bootstrap_file() -> Path | None:
@@ -883,6 +1146,9 @@ def _bootstrap_if_empty() -> None:
             description=item.get("description"),
             borough=item.get("borough"),
             category=item.get("category"),
+            org_type=item.get("org_type"),
+            primary_type=item.get("primary_type"),
+            parent_org_id=item.get("parent_org_id"),
             source=item.get("source", "bootstrap_file"),
         )
 
@@ -894,6 +1160,9 @@ def upsert_org(
     description: str | None = None,
     borough: str | None = None,
     category: str | None = None,
+    org_type: str | None = None,
+    primary_type: str | None = None,
+    parent_org_id: int | None = None,
     source: str | None = None,
 ) -> int:
     """Insert an org, or merge into an existing matching org."""
@@ -902,6 +1171,8 @@ def upsert_org(
 
     source_domain = _domain_from_url(homepage) or _domain_from_url(events_url)
     norm_name = _normalize_name(name)
+    resolved_org_type = _resolve_org_type(name=name, org_type=org_type, category=category)
+    resolved_primary_type = _normalize_primary_type(primary_type) or _primary_type_for_org_type(resolved_org_type)
 
     with get_db() as conn:
         # PostgreSQL (psycopg3) can reject ":param IS NOT NULL" checks as ambiguous
@@ -963,11 +1234,30 @@ def upsert_org(
                 updates["borough"] = borough
             if not str(existing.get("category") or "").strip() and str(category or "").strip():
                 updates["category"] = category
+            existing_org_type = _normalize_org_type(existing.get("org_type"))
+            if existing_org_type not in ORG_TYPE_VALUES:
+                updates["org_type"] = resolved_org_type
+            elif existing_org_type == "organisation" and resolved_org_type != "organisation":
+                updates["org_type"] = resolved_org_type
+            existing_primary = _normalize_primary_type(existing.get("primary_type"))
+            target_primary = _primary_type_for_org_type(updates.get("org_type") or existing_org_type)
+            if existing_primary not in PRIMARY_TYPE_VALUES or existing_primary != target_primary:
+                updates["primary_type"] = target_primary
+            if parent_org_id is not None:
+                updates["parent_org_id"] = int(parent_org_id)
             if not str(existing.get("source") or "").strip() and str(source or "").strip():
                 updates["source"] = source
 
             best_description = _best_description(
-                existing.get("description"), description, {**existing, "name": name, "borough": borough, "category": category}
+                existing.get("description"),
+                description,
+                {
+                    **existing,
+                    "name": name,
+                    "borough": borough,
+                    "category": category,
+                    "org_type": updates.get("org_type") or existing.get("org_type"),
+                },
             )
             if best_description != (existing.get("description") or "").strip():
                 updates["description"] = best_description
@@ -985,9 +1275,16 @@ def upsert_org(
             "name": name,
             "homepage": homepage,
             "events_url": events_url,
-            "description": _best_description(None, description, {"name": name, "borough": borough, "category": category}),
+            "description": _best_description(
+                None,
+                description,
+                {"name": name, "borough": borough, "category": category, "org_type": resolved_org_type},
+            ),
             "borough": borough,
             "category": category,
+            "org_type": resolved_org_type,
+            "primary_type": resolved_primary_type,
+            "parent_org_id": int(parent_org_id) if parent_org_id is not None else None,
             "source": source,
             "source_domain": source_domain,
         }
@@ -996,8 +1293,10 @@ def upsert_org(
             inserted = conn.execute(
                 text(
                     """
-                    INSERT INTO orgs (name, homepage, events_url, description, borough, category, source, source_domain)
-                    VALUES (:name, :homepage, :events_url, :description, :borough, :category, :source, :source_domain)
+                    INSERT INTO orgs
+                    (name, homepage, events_url, description, borough, category, org_type, primary_type, parent_org_id, source, source_domain)
+                    VALUES
+                    (:name, :homepage, :events_url, :description, :borough, :category, :org_type, :primary_type, :parent_org_id, :source, :source_domain)
                     RETURNING id
                     """
                 ),
@@ -1009,8 +1308,10 @@ def upsert_org(
             conn.execute(
                 text(
                     """
-                    INSERT INTO orgs (name, homepage, events_url, description, borough, category, source, source_domain)
-                    VALUES (:name, :homepage, :events_url, :description, :borough, :category, :source, :source_domain)
+                    INSERT INTO orgs
+                    (name, homepage, events_url, description, borough, category, org_type, primary_type, parent_org_id, source, source_domain)
+                    VALUES
+                    (:name, :homepage, :events_url, :description, :borough, :category, :org_type, :primary_type, :parent_org_id, :source, :source_domain)
                     """
                 ),
                 params,
@@ -1036,6 +1337,9 @@ def update_org(org_id: int, **fields: Any) -> None:
         "description",
         "borough",
         "category",
+        "org_type",
+        "primary_type",
+        "parent_org_id",
         "notes",
         "status",
         "source",
@@ -1065,6 +1369,29 @@ def update_org(org_id: int, **fields: Any) -> None:
     if "description" in updates:
         current = get_org(org_id) or {}
         updates["description"] = _best_description(current.get("description"), updates.get("description"), {**current, **updates})
+
+    if "org_type" in updates or "category" in updates:
+        current = get_org(org_id) or {}
+        target_org_type = _resolve_org_type(
+            name=updates.get("name") if updates.get("name") is not None else current.get("name"),
+            org_type=updates.get("org_type") if "org_type" in updates else current.get("org_type"),
+            category=updates.get("category") if "category" in updates else current.get("category"),
+        )
+        updates["org_type"] = target_org_type
+        if "primary_type" not in updates:
+            updates["primary_type"] = _primary_type_for_org_type(target_org_type)
+
+    if "primary_type" in updates:
+        normalized_primary = _normalize_primary_type(updates.get("primary_type"))
+        if normalized_primary not in PRIMARY_TYPE_VALUES:
+            normalized_primary = _primary_type_for_org_type(updates.get("org_type"))
+        updates["primary_type"] = normalized_primary
+
+    if "parent_org_id" in updates and updates.get("parent_org_id") is not None:
+        try:
+            updates["parent_org_id"] = int(updates["parent_org_id"])
+        except Exception:
+            updates["parent_org_id"] = None
 
     set_clause = ", ".join(f"{key} = :{key}" for key in updates)
     params = {**updates, "org_id": org_id}
@@ -1165,7 +1492,7 @@ def get_public_orgs(limit: int | None = None) -> list[dict[str, Any]]:
         WHERE {_active_filter_sql()}
           AND coalesce(issue_state, 'none') IN ('none', 'resolved')
           AND coalesce(status, 'pending') <> 'rejected'
-        ORDER BY category ASC, borough ASC, name ASC, created_at DESC, id DESC
+        ORDER BY org_type ASC, borough ASC, name ASC, created_at DESC, id DESC
     """
     params: dict[str, Any] = {}
     if limit:
@@ -1258,6 +1585,110 @@ def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit
         "already_inactive": already_inactive,
         "already_rejected": already_rejected,
         "sample": flagged[:30],
+    }
+
+
+def normalize_org_taxonomy(dry_run: bool = False) -> dict[str, Any]:
+    with get_db() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, name, category, org_type, primary_type, parent_org_id
+                FROM orgs
+                ORDER BY id ASC
+                """
+            )
+        ).mappings().all()
+
+    updates: list[dict[str, Any]] = []
+    transitions: dict[str, int] = {}
+    primary_transitions: dict[str, int] = {}
+
+    for row in rows:
+        row_dict = dict(row)
+        current_org_type = _normalize_org_type(row_dict.get("org_type"))
+        current_primary = _normalize_primary_type(row_dict.get("primary_type"))
+
+        target_org_type = _resolve_org_type(
+            name=row_dict.get("name"),
+            org_type=row_dict.get("org_type"),
+            category=row_dict.get("category"),
+        )
+        target_primary = _primary_type_for_org_type(target_org_type)
+
+        if current_org_type == target_org_type and current_primary == target_primary:
+            continue
+
+        updates.append(
+            {
+                "id": int(row_dict["id"]),
+                "name": row_dict.get("name"),
+                "from_org_type": current_org_type or None,
+                "to_org_type": target_org_type,
+                "from_primary_type": current_primary or None,
+                "to_primary_type": target_primary,
+            }
+        )
+
+        trans_key = f"{current_org_type or '(empty)'} -> {target_org_type}"
+        transitions[trans_key] = transitions.get(trans_key, 0) + 1
+        primary_key = f"{current_primary or '(empty)'} -> {target_primary}"
+        primary_transitions[primary_key] = primary_transitions.get(primary_key, 0) + 1
+
+    if not dry_run and updates:
+        with get_db() as conn:
+            for item in updates:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE orgs
+                        SET org_type = :org_type,
+                            primary_type = :primary_type
+                        WHERE id = :org_id
+                        """
+                    ),
+                    {
+                        "org_type": item["to_org_type"],
+                        "primary_type": item["to_primary_type"],
+                        "org_id": int(item["id"]),
+                    },
+                )
+
+    with get_db() as conn:
+        null_org_type_count = int(
+            conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM orgs
+                    WHERE org_type IS NULL OR trim(org_type) = ''
+                    """
+                )
+            ).scalar_one()
+        )
+        forbidden_org_type_count = int(
+            conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM orgs
+                    WHERE lower(trim(coalesce(org_type, ''))) IN
+                    ('poetry_readings', 'one_off_event', 'one-off_event', 'other')
+                    """
+                )
+            ).scalar_one()
+        )
+
+    return {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "scanned": len(rows),
+        "updated": len(updates),
+        "org_type_transitions": transitions,
+        "primary_type_transitions": primary_transitions,
+        "null_org_type_count": null_org_type_count,
+        "forbidden_org_type_count": forbidden_org_type_count,
+        "sample": updates[:50],
     }
 
 

@@ -397,6 +397,41 @@ ONE_OFF_EVENT_KEYWORDS = (
     "open house",
 )
 
+ONE_OFF_NAME_KEYWORDS = (
+    "festival",
+    "run",
+    "marathon",
+    "5k",
+    "10k",
+    "half marathon",
+    "open house",
+    "fair",
+    "expo",
+    "biennale",
+    "triennale",
+    "week",
+    "weekender",
+    "carnival",
+)
+
+ORGANIZER_HINT_TERMS = (
+    "foundation",
+    "society",
+    "trust",
+    "institute",
+    "university",
+    "college",
+    "council",
+    "association",
+    "charity",
+    "centre",
+    "center",
+    "museum",
+    "gallery",
+    "cinema",
+    "theatre",
+)
+
 BOROUGH_ALIASES = {
     "kensington and chelsea": ["kensington & chelsea", "kensington and chelsea"],
 }
@@ -446,6 +481,23 @@ CATEGORY_CANONICAL_MAP = {
     "garden": "Garden",
     "one-off event": "One-off event",
     "other": "Other",
+}
+
+DISCOVERY_ORG_TYPE_MAP = {
+    "Bookshops": "bookshop",
+    "Cinema": "cinema",
+    "Gallery": "gallery",
+    "Live music venue": "live_music_venue",
+    "Makers space": "makers_space",
+    "Museum": "museum",
+    "Park": "park",
+    "Garden": "garden",
+    "Theatre": "theatre",
+    "Education": "learned_society",
+    "Cultural centers": "cultural_centre",
+    "Poetry readings": "organisation",
+    "One-off event": "organisation",
+    "Other": "organisation",
 }
 
 BAD_NAME_PHRASES = {
@@ -1181,6 +1233,90 @@ def _extract_jsonld_types(soup: BeautifulSoup) -> list[str]:
     return out[:20]
 
 
+def _extract_jsonld_organizers(soup: BeautifulSoup) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    org_type_markers = {
+        "organization",
+        "corporation",
+        "localbusiness",
+        "ngo",
+        "governmentorganization",
+        "educationalorganization",
+        "performinggroup",
+        "civicstructure",
+    }
+
+    def _add_name(value: str | None) -> None:
+        name = _clean_text(value)
+        key = _normalize_name(name)
+        if not name or not key or key in seen:
+            return
+        if _word_count(name) > 10:
+            return
+        seen.add(key)
+        out.append(name)
+
+    def _collect_names(value: Any) -> None:
+        if isinstance(value, dict):
+            _add_name(value.get("name"))
+            _add_name(value.get("legalName"))
+            for nested in value.values():
+                _collect_names(nested)
+        elif isinstance(value, list):
+            for item in value:
+                _collect_names(item)
+        elif isinstance(value, str):
+            _add_name(value)
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            type_values = value.get("@type")
+            normalized_types: set[str] = set()
+            if isinstance(type_values, str):
+                normalized_types.add(_normalize_token(type_values).replace(" ", ""))
+            elif isinstance(type_values, list):
+                for item in type_values:
+                    normalized_types.add(_normalize_token(item).replace(" ", ""))
+
+            if normalized_types & org_type_markers:
+                _add_name(value.get("name"))
+                _add_name(value.get("legalName"))
+
+            for key, nested in value.items():
+                key_norm = _normalize_token(key)
+                if key_norm in {
+                    "organizer",
+                    "organisers",
+                    "organizers",
+                    "organiser",
+                    "publisher",
+                    "provider",
+                    "sponsor",
+                    "sponsors",
+                    "funder",
+                    "producer",
+                    "about",
+                }:
+                    _collect_names(nested)
+                _walk(nested)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    for script in soup.select("script[type='application/ld+json']"):
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        _walk(payload)
+
+    return out[:16]
+
+
 def _extract_address_snippets(text_blob: str) -> list[str]:
     lines: list[str] = []
     seen: set[str] = set()
@@ -1303,6 +1439,7 @@ def _fetch_page_bundle(url: str, timeout: int, metrics: dict[str, int]) -> dict[
         "nav_terms": _collect_nav_terms(soup),
         "footer_snippet": footer_text[:500],
         "jsonld_types": _extract_jsonld_types(soup),
+        "jsonld_organizers": _extract_jsonld_organizers(soup),
         "address_snippets": _extract_address_snippets(body_text[:12000]),
         "internal_links": _collect_internal_links(final_url, soup, max_links=90),
         "text_preview": body_text[:2200],
@@ -1760,11 +1897,13 @@ def _build_domain_bundle(
     merged_headings: list[str] = []
     merged_addresses: list[str] = []
     merged_jsonld: list[str] = []
+    merged_organizers: list[str] = []
     merged_event_candidates: list[str] = []
     seen_nav: set[str] = set()
     seen_headings: set[str] = set()
     seen_addr: set[str] = set()
     seen_types: set[str] = set()
+    seen_organizers: set[str] = set()
     seen_event_urls: set[str] = set()
 
     for page in page_bundles:
@@ -1796,6 +1935,14 @@ def _build_domain_bundle(
             seen_types.add(normalized)
             merged_jsonld.append(normalized)
 
+        for item in page.get("jsonld_organizers", [])[:20]:
+            clean_name = _clean_text(item)
+            name_key = _normalize_name(clean_name)
+            if not clean_name or not name_key or name_key in seen_organizers:
+                continue
+            seen_organizers.add(name_key)
+            merged_organizers.append(clean_name)
+
         for link in page.get("internal_links", [])[:60]:
             if not isinstance(link, dict):
                 continue
@@ -1821,6 +1968,7 @@ def _build_domain_bundle(
         "nav_terms": merged_nav[:40],
         "footer_snippet": _clean_text(primary.get("footer_snippet"))[:500],
         "jsonld_types": merged_jsonld[:30],
+        "jsonld_organizers": merged_organizers[:20],
         "address_snippets": merged_addresses[:16],
         "events_link_candidates": merged_event_candidates[:25],
         "text_preview": _clean_text(primary.get("text_preview"))[:1800],
@@ -1896,6 +2044,126 @@ def _canonicalize_category_label(
         return "Education"
 
     return "Other"
+
+
+def _org_type_from_category(name: str | None, category_label: str | None, entity_kind: str = "place") -> str:
+    if entity_kind == "one_off_event":
+        return "organisation"
+
+    category = _clean_text(category_label)
+    mapped = DISCOVERY_ORG_TYPE_MAP.get(category)
+    if mapped:
+        if mapped == "learned_society":
+            name_norm = _normalize_token(name)
+            if any(token in name_norm for token in ("university", "college", "soas", "lse", "imperial")):
+                return "university"
+        return mapped
+    return "organisation"
+
+
+def _looks_like_one_off_name(name: str | None) -> bool:
+    normalized = _normalize_token(name)
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in ONE_OFF_NAME_KEYWORDS)
+
+
+def _clean_organizer_candidate(value: str | None) -> str | None:
+    candidate = _clean_text(value)
+    if not candidate:
+        return None
+    candidate = re.sub(r"\s+\((official|uk|london)\)\s*$", "", candidate, flags=re.IGNORECASE).strip()
+    candidate = re.sub(r"\s+[|:-]\s+.*$", "", candidate).strip()
+    candidate = candidate.strip(" -:|,.;")
+    if not candidate:
+        return None
+    if _word_count(candidate) > 10:
+        return None
+    if _looks_like_generic_entity_name(candidate):
+        return None
+    if _looks_like_article_title(candidate):
+        return None
+    if _looks_like_one_off_name(candidate):
+        return None
+    return candidate
+
+
+def _extract_organizer_candidates_from_text(bundle: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    values.extend(bundle.get("headings", [])[:18])
+    values.extend(bundle.get("nav_terms", [])[:20])
+    values.extend(bundle.get("jsonld_organizers", [])[:20])
+    values.extend(
+        [
+            bundle.get("title"),
+            bundle.get("h1"),
+            bundle.get("meta_description"),
+            bundle.get("footer_snippet"),
+            bundle.get("text_preview"),
+        ]
+    )
+    text_blob = " \n ".join(_clean_text(item) for item in values if _clean_text(item))
+    if not text_blob:
+        return []
+
+    patterns = (
+        r"(?:organis(?:ed|er|ing)|organiz(?:ed|er|ing)|presented|hosted|run|produced|brought)\s+by\s+([A-Z][A-Za-z0-9&'’().,\- ]{2,100})",
+        r"(?:in partnership with|partnered with|in association with)\s+([A-Z][A-Za-z0-9&'’().,\- ]{2,100})",
+        r"(?:from|by)\s+([A-Z][A-Za-z0-9&'’().,\- ]{2,90}(?:Foundation|Society|Trust|Institute|University|College|Council|Association|Charity))",
+    )
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, text_blob):
+            raw_name = _clean_text(match.group(1))
+            candidate = _clean_organizer_candidate(raw_name)
+            if not candidate:
+                continue
+            key = _normalize_name(candidate)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            found.append(candidate)
+
+    return found[:20]
+
+
+def _pick_organizer_name(bundle: dict[str, Any], current_name: str | None = None) -> str | None:
+    current_key = _normalize_name(current_name)
+    candidates: list[str] = []
+    candidates.extend(_clean_text(item) for item in bundle.get("jsonld_organizers", [])[:20])
+    candidates.extend(_extract_organizer_candidates_from_text(bundle))
+
+    if not candidates:
+        return None
+
+    scored: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        candidate = _clean_organizer_candidate(raw)
+        if not candidate:
+            continue
+        key = _normalize_name(candidate)
+        if not key or key in seen or key == current_key:
+            continue
+        seen.add(key)
+        score = 0
+        lower = _normalize_token(candidate)
+        if any(term in lower for term in ORGANIZER_HINT_TERMS):
+            score += 4
+        if _is_valid_entity_name(candidate):
+            score += 3
+        if len(candidate) <= 45:
+            score += 1
+        scored.append((score, candidate))
+
+    if not scored:
+        return None
+
+    scored.sort(key=lambda item: (-item[0], item[1].lower()))
+    best = scored[0][1]
+    return best if _is_valid_entity_name(best) else None
 
 
 def _guess_name_from_bundle(bundle: dict[str, Any]) -> str | None:
@@ -2096,6 +2364,7 @@ def _domain_fingerprint(bundle: dict[str, Any]) -> str:
         "headings": bundle.get("headings", [])[:15],
         "nav_terms": bundle.get("nav_terms", [])[:20],
         "jsonld_types": bundle.get("jsonld_types", [])[:20],
+        "jsonld_organizers": bundle.get("jsonld_organizers", [])[:12],
         "events_link_candidates": bundle.get("events_link_candidates", [])[:8],
     }
     return _hash_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
@@ -2125,7 +2394,8 @@ def _classify_site_bundles_with_llm(
         "\"description\": str|null, \"confidence\": number, \"reason_codes\": [str]}]}. "
         "Exclusions (never entity): aggregators/listicles/marketplaces/directories/social networks/publishers/ticket pages. "
         "A place is a recurring London venue/institution/organizer with a real-world presence. "
-        "one_off_event is a major standalone event series or annual event with official landing page."
+        "one_off_event is a major standalone event series or annual event with official landing page. "
+        "For one_off_event, prefer naming the organizer organization when identifiable."
     )
 
     for start in range(0, len(bundles), max(1, batch_size)):
@@ -2143,6 +2413,7 @@ def _classify_site_bundles_with_llm(
                     "nav_terms": item.get("nav_terms", [])[:18],
                     "footer_snippet": item.get("footer_snippet", "")[:220],
                     "jsonld_types": item.get("jsonld_types", [])[:20],
+                    "jsonld_organizers": item.get("jsonld_organizers", [])[:10],
                     "address_snippets": item.get("address_snippets", [])[:6],
                     "events_link_candidates": item.get("events_link_candidates", [])[:8],
                     "text_preview": item.get("text_preview", "")[:900],
@@ -2239,6 +2510,15 @@ def _finalize_entity_record(
     if entity_kind not in {"place", "one_off_event"}:
         entity_kind = "place"
 
+    if entity_kind == "one_off_event":
+        organizer_name = _pick_organizer_name(bundle, current_name=name)
+        if organizer_name:
+            name = organizer_name
+        elif _looks_like_one_off_name(name):
+            # If this is clearly an event label (festival/run/etc.) and we
+            # cannot identify an organizer org, skip insertion.
+            return None
+
     homepage = (
         _canonicalize_url(entity.get("homepage"), include_path=False)
         or _normalize_homepage(bundle.get("homepage") or bundle.get("sample_urls", [""])[0])
@@ -2273,6 +2553,12 @@ def _finalize_entity_record(
         blob=blob,
         entity_kind=entity_kind,
     )
+    org_type = _org_type_from_category(name, category, entity_kind=entity_kind)
+    primary_type = "venue"
+    if org_type in {"cultural_centre", "university", "learned_society"}:
+        primary_type = "institution"
+    elif org_type == "organisation":
+        primary_type = "organisation"
 
     description = _clean_text(entity.get("description"))
     if not description:
@@ -2293,6 +2579,9 @@ def _finalize_entity_record(
         "description": description,
         "borough": borough,
         "category": category,
+        "org_type": org_type,
+        "primary_type": primary_type,
+        "parent_org_id": None,
         "source": source,
         "entity_kind": entity_kind,
         "confidence": max(0.0, min(1.0, confidence)),
@@ -2320,7 +2609,7 @@ def import_from_file(filepath):
     """Import orgs from a JSON file.
 
     Expected format: list of objects with at minimum a 'name' field.
-    Optional fields: homepage, events_url, description, borough, category.
+    Optional fields: homepage, events_url, description, borough, category, org_type.
     """
     with open(filepath) as f:
         data = json.load(f)
@@ -2340,6 +2629,9 @@ def import_from_file(filepath):
             description=item.get("description"),
             borough=item.get("borough"),
             category=item.get("category"),
+            org_type=item.get("org_type"),
+            primary_type=item.get("primary_type"),
+            parent_org_id=item.get("parent_org_id"),
             source="file_import",
         )
         count += 1
@@ -2729,6 +3021,9 @@ def run_discovery_cycle(
                         description=item.get("description"),
                         borough=item.get("borough"),
                         category=item.get("category"),
+                        org_type=item.get("org_type"),
+                        primary_type=item.get("primary_type"),
+                        parent_org_id=item.get("parent_org_id"),
                         source=item.get("source", "auto_discovery"),
                     )
                     upserted_count += 1

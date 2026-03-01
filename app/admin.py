@@ -21,6 +21,7 @@ from app.db import (
     get_stats,
     get_strategies,
     init_db,
+    normalize_org_taxonomy,
     normalize_org_categories,
     set_strategy_active,
     update_org,
@@ -204,13 +205,14 @@ def _public_payload() -> dict:
                 "id": int(row["id"]),
                 "name": name,
                 "borough": str(row.get("borough") or "").strip() or "Unspecified",
-                "category": str(row.get("category") or "").strip() or "other",
+                "org_type": str(row.get("org_type") or "").strip() or "organisation",
+                "primary_type": str(row.get("primary_type") or "").strip() or "organisation",
                 "events_url": events_url,
                 "homepage": homepage,
             }
         )
 
-    orgs.sort(key=lambda item: (item["category"].lower(), item["borough"].lower(), item["name"].lower()))
+    orgs.sort(key=lambda item: (item["org_type"].lower(), item["borough"].lower(), item["name"].lower()))
     return {"orgs": orgs}
 
 
@@ -240,6 +242,9 @@ def add_org():
             description=data.get("description"),
             borough=data.get("borough"),
             category=data.get("category"),
+            org_type=data.get("org_type") or data.get("type"),
+            primary_type=data.get("primary_type"),
+            parent_org_id=data.get("parent_org_id"),
             source=data.get("source", "manual"),
         )
 
@@ -272,6 +277,9 @@ def bulk_add():
             description=item.get("description"),
             borough=item.get("borough"),
             category=item.get("category"),
+            org_type=item.get("org_type") or item.get("type"),
+            primary_type=item.get("primary_type"),
+            parent_org_id=item.get("parent_org_id"),
             source=item.get("source", "bulk_import"),
         )
         if not str(item.get("events_url") or "").strip():
@@ -333,14 +341,20 @@ def review_org(org_id):
     if isinstance(data.get("borough"), str):
         updates["borough"] = data.get("borough").strip() or None
 
-    if isinstance(data.get("category"), str):
-        updates["category"] = data.get("category").strip() or None
+    type_value = data.get("org_type")
+    if not isinstance(type_value, str):
+        type_value = data.get("category")
+    if isinstance(type_value, str):
+        updates["org_type"] = type_value.strip() or None
 
     if "crawl_paused" in data:
         updates["crawl_paused"] = bool(data.get("crawl_paused"))
 
     if "active" in data:
         updates["active"] = bool(data.get("active"))
+
+    if "parent_org_id" in data:
+        updates["parent_org_id"] = data.get("parent_org_id")
 
     if feedback:
         updates["notes"] = feedback
@@ -472,6 +486,13 @@ def cleanup_discovery_now():
 def normalize_categories_now():
     data = request.json or {}
     summary = normalize_org_categories(dry_run=bool(data.get("dry_run", False)))
+    return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
+
+
+@app.route("/api/admin/taxonomy/normalize", methods=["POST"])
+def normalize_taxonomy_now():
+    data = request.json or {}
+    summary = normalize_org_taxonomy(dry_run=bool(data.get("dry_run", False)))
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
 
 

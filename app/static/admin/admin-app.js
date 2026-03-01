@@ -1,14 +1,34 @@
 const ORG_TYPES = [
-  "gallery",
-  "museum",
-  "cinema",
   "bookshop",
-  "cultural centre",
-  "art centre",
-  "house",
-  "social community center",
-  "other",
+  "cinema",
+  "gallery",
+  "live_music_venue",
+  "theatre",
+  "museum",
+  "makers_space",
+  "park",
+  "garden",
+  "cultural_centre",
+  "university",
+  "learned_society",
+  "organisation",
 ];
+
+const ORG_TYPE_LABELS = {
+  bookshop: "Bookshop",
+  cinema: "Cinema",
+  gallery: "Gallery",
+  live_music_venue: "Live music venue",
+  theatre: "Theatre",
+  museum: "Museum",
+  makers_space: "Makers space",
+  park: "Park",
+  garden: "Garden",
+  cultural_centre: "Cultural centre",
+  university: "University",
+  learned_society: "Learned society",
+  organisation: "Organisation",
+};
 
 const BOROUGH_OPTIONS = [
   "Hackney",
@@ -73,7 +93,7 @@ const ui = {
     homepage: "",
     events_url: "",
     borough: "",
-    category: "gallery",
+    org_type: "gallery",
     description: "",
   },
 };
@@ -106,7 +126,22 @@ function renderBoroughOptions(selectedValue) {
 }
 
 function renderCategoryOptions(selectedValue) {
-  return renderSelectOptions(ORG_TYPES, selectedValue, "Select type");
+  const selected = String(selectedValue || "").trim();
+  const values = ORG_TYPES.slice();
+  if (selected && !values.includes(selected)) {
+    values.unshift(selected);
+  }
+  const options = values.map((value) => {
+    const label = ORG_TYPE_LABELS[value] || value;
+    return `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+  return `<option value="">Select type</option>${options}`;
+}
+
+function orgTypeLabel(value) {
+  const clean = String(value || "").trim();
+  if (!clean) return "Organisation";
+  return ORG_TYPE_LABELS[clean] || clean.replace(/_/g, " ");
 }
 
 function escapeHtml(value) {
@@ -143,14 +178,14 @@ function syncCurrentQueue() {
 }
 
 function ensureQueueDraft(org) {
-  if (!org) return { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+  if (!org) return { feedback: "", events_url: "", name: "", borough: "", org_type: "organisation" };
   if (!ui.queueDrafts[org.id]) {
     ui.queueDrafts[org.id] = {
       feedback: org.notes || "",
       events_url: org.events_url || "",
       name: org.name || "",
       borough: org.borough || "",
-      category: org.category || "other",
+      org_type: org.org_type || "organisation",
     };
   }
   return ui.queueDrafts[org.id];
@@ -199,7 +234,7 @@ async function saveQueueAction(action) {
         events_url: (draft.events_url || "").trim(),
         name: (draft.name || "").trim(),
         borough: (draft.borough || "").trim(),
-        category: (draft.category || "").trim(),
+        org_type: (draft.org_type || "").trim(),
       }),
     });
 
@@ -227,7 +262,7 @@ async function addManualOrg(form) {
     homepage: form.homepage.value.trim(),
     events_url: form.events_url.value.trim(),
     borough: form.borough.value.trim(),
-    category: form.category.value,
+    org_type: form.org_type.value,
     description: form.description.value.trim(),
     source: "manual",
   };
@@ -251,7 +286,7 @@ async function addManualOrg(form) {
       homepage: "",
       events_url: "",
       borough: "",
-      category: "gallery",
+      org_type: "gallery",
       description: "",
     };
 
@@ -455,9 +490,9 @@ function renderQueue() {
           ${renderBoroughOptions(draft.borough)}
         </select>
 
-        <label class="feedback-label" for="queue-category">Type</label>
-        <select id="queue-category" data-action="queue-category-input" data-id="${current.id}">
-          ${renderCategoryOptions(draft.category)}
+        <label class="feedback-label" for="queue-org-type">Type</label>
+        <select id="queue-org-type" data-action="queue-org-type-input" data-id="${current.id}">
+          ${renderCategoryOptions(draft.org_type)}
         </select>
 
         <label class="feedback-label" for="queue-events-url">Events URL fix (optional)</label>
@@ -496,11 +531,11 @@ function renderActive() {
   const activeOrgs = state.active_orgs || [];
   const total = activeOrgs.length;
 
-  // Count orgs per category and borough
+  // Count orgs per type and borough
   const byCat = {};
   const byBor = {};
   for (const item of activeOrgs) {
-    const cat = item.category || "other";
+    const cat = item.org_type || "organisation";
     const bor = item.borough || "unknown";
     byCat[cat] = (byCat[cat] || 0) + 1;
     byBor[bor] = (byBor[bor] || 0) + 1;
@@ -508,7 +543,10 @@ function renderActive() {
 
   const catOptions = Object.entries(byCat)
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([name, count]) => `<option value="${escapeHtml(name)}" ${ui.activeFilterCategory === name ? "selected" : ""}>${escapeHtml(name)} (${count})</option>`)
+    .map(
+      ([name, count]) =>
+        `<option value="${escapeHtml(name)}" ${ui.activeFilterCategory === name ? "selected" : ""}>${escapeHtml(orgTypeLabel(name))} (${count})</option>`
+    )
     .join("");
 
   const borOptions = Object.entries(byBor)
@@ -518,7 +556,7 @@ function renderActive() {
 
   // Filter rows
   const filtered = activeOrgs.filter((item) => {
-    if (ui.activeFilterCategory && (item.category || "other") !== ui.activeFilterCategory) return false;
+    if (ui.activeFilterCategory && (item.org_type || "organisation") !== ui.activeFilterCategory) return false;
     if (ui.activeFilterBorough && (item.borough || "unknown") !== ui.activeFilterBorough) return false;
     return true;
   });
@@ -531,7 +569,7 @@ function renderActive() {
       <tr>
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.borough || "-")}</td>
-        <td>${escapeHtml(item.category || "-")}</td>
+        <td>${escapeHtml(orgTypeLabel(item.org_type || "organisation"))}</td>
         <td>${item.events_url ? `<a href="${escapeHtml(item.events_url)}" target="_blank" rel="noreferrer">Link</a>` : "-"}</td>
         <td>${escapeHtml(formatDate(item.created_at))}</td>
         <td>
@@ -557,7 +595,7 @@ function renderActive() {
 
       <div class="active-filters">
         <select data-action="active-filter-category">
-          <option value="" ${!ui.activeFilterCategory ? "selected" : ""}>All categories (${total})</option>
+          <option value="" ${!ui.activeFilterCategory ? "selected" : ""}>All types (${total})</option>
           ${catOptions}
         </select>
         <select data-action="active-filter-borough">
@@ -613,9 +651,9 @@ function renderAdd() {
             ${renderBoroughOptions(ui.manualDraft.borough)}
           </select>
         </label>
-        <label>Category
-          <select name="category">
-            ${renderCategoryOptions(ui.manualDraft.category)}
+        <label>Type
+          <select name="org_type">
+            ${renderCategoryOptions(ui.manualDraft.org_type)}
           </select>
         </label>
         <label>Description
@@ -895,7 +933,7 @@ app.addEventListener("input", (event) => {
   if (target.dataset.action === "queue-feedback-input") {
     const id = Number(target.dataset.id);
     if (!id) return;
-    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", org_type: "organisation" };
     draft.feedback = target.value;
     ui.queueDrafts[id] = draft;
     return;
@@ -904,7 +942,7 @@ app.addEventListener("input", (event) => {
   if (target.dataset.action === "queue-events-url-input") {
     const id = Number(target.dataset.id);
     if (!id) return;
-    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", org_type: "organisation" };
     draft.events_url = target.value;
     ui.queueDrafts[id] = draft;
     return;
@@ -913,7 +951,7 @@ app.addEventListener("input", (event) => {
   if (target.dataset.action === "queue-name-input") {
     const id = Number(target.dataset.id);
     if (!id) return;
-    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", org_type: "organisation" };
     draft.name = target.value;
     ui.queueDrafts[id] = draft;
     return;
@@ -922,17 +960,17 @@ app.addEventListener("input", (event) => {
   if (target.dataset.action === "queue-borough-input") {
     const id = Number(target.dataset.id);
     if (!id) return;
-    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", org_type: "organisation" };
     draft.borough = target.value;
     ui.queueDrafts[id] = draft;
     return;
   }
 
-  if (target.dataset.action === "queue-category-input") {
+  if (target.dataset.action === "queue-org-type-input") {
     const id = Number(target.dataset.id);
     if (!id) return;
-    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", category: "other" };
-    draft.category = target.value;
+    const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", org_type: "organisation" };
+    draft.org_type = target.value;
     ui.queueDrafts[id] = draft;
     return;
   }

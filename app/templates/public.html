@@ -155,7 +155,7 @@
       <h1>London Tasteful Events</h1>
 
       <section class="controls">
-        <select id="category-filter"></select>
+        <select id="type-filter"></select>
         <select id="borough-filter"></select>
         <button id="clear-filters" type="button">Clear</button>
       </section>
@@ -171,12 +171,12 @@
       const allOrgs = Array.isArray(payload.orgs) ? payload.orgs : [];
 
       const ui = {
-        category: "all",
+        org_type: "all",
         borough: "all",
       };
 
       const els = {
-        category: document.getElementById("category-filter"),
+        org_type: document.getElementById("type-filter"),
         borough: document.getElementById("borough-filter"),
         clear: document.getElementById("clear-filters"),
         results: document.getElementById("results"),
@@ -204,6 +204,26 @@
           .join(" ");
       }
 
+      function orgTypeLabel(value) {
+        const labels = {
+          bookshop: "Bookshop",
+          cinema: "Cinema",
+          gallery: "Gallery",
+          live_music_venue: "Live music venue",
+          theatre: "Theatre",
+          museum: "Museum",
+          makers_space: "Makers space",
+          park: "Park",
+          garden: "Garden",
+          cultural_centre: "Cultural centre",
+          university: "University",
+          learned_society: "Learned society",
+          organisation: "Organisation",
+        };
+        const cleanValue = clean(value, "organisation");
+        return labels[cleanValue] || titleCase(cleanValue.replace(/_/g, " "));
+      }
+
       function uniqueValues(items, key, fallback) {
         const values = new Set();
         for (const item of items) {
@@ -222,14 +242,14 @@
       }
 
       function writeFilterOptions() {
-        const categories = uniqueValues(allOrgs, "category", "other");
+        const types = uniqueValues(allOrgs, "org_type", "organisation");
         const boroughs = uniqueValues(allOrgs, "borough", "Unspecified");
-        const catCounts = countBy(allOrgs, "category", "other");
+        const typeCounts = countBy(allOrgs, "org_type", "organisation");
         const borCounts = countBy(allOrgs, "borough", "Unspecified");
         const total = allOrgs.length;
 
-        els.category.innerHTML = `<option value="all">All categories (${total})</option>${categories
-          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(titleCase(item))} (${catCounts[item] || 0})</option>`)
+        els.org_type.innerHTML = `<option value="all">All types (${total})</option>${types
+          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(orgTypeLabel(item))} (${typeCounts[item] || 0})</option>`)
           .join("")}`;
 
         els.borough.innerHTML = `<option value="all">All boroughs (${total})</option>${boroughs
@@ -239,9 +259,9 @@
 
       function filteredOrgs() {
         const list = allOrgs.filter((org) => {
-          const category = clean(org.category, "other");
+          const orgType = clean(org.org_type, "organisation");
           const borough = clean(org.borough, "Unspecified");
-          if (ui.category !== "all" && ui.category !== category) return false;
+          if (ui.org_type !== "all" && ui.org_type !== orgType) return false;
           if (ui.borough !== "all" && ui.borough !== borough) return false;
           return true;
         });
@@ -261,7 +281,7 @@
           .map((org) => {
             const name = clean(org.name, "Unnamed");
             const eventsUrl = clean(org.events_url);
-            const category = titleCase(clean(org.category, "other"));
+            const orgType = orgTypeLabel(org.org_type);
             const borough = clean(org.borough, "Unspecified");
             const nameMarkup = eventsUrl
               ? `<a href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(name)}</a>`
@@ -269,7 +289,7 @@
             return `
               <li>
                 <p class="org-name">${nameMarkup}</p>
-                <div class="org-meta">${escapeHtml(category)} • ${escapeHtml(borough)}</div>
+                <div class="org-meta">${escapeHtml(orgType)} • ${escapeHtml(borough)}</div>
               </li>
             `;
           })
@@ -279,8 +299,8 @@
       }
 
       function wireEvents() {
-        els.category.addEventListener("change", (event) => {
-          ui.category = event.target.value || "all";
+        els.org_type.addEventListener("change", (event) => {
+          ui.org_type = event.target.value || "all";
           render();
         });
 
@@ -290,9 +310,9 @@
         });
 
         els.clear.addEventListener("click", () => {
-          ui.category = "all";
+          ui.org_type = "all";
           ui.borough = "all";
-          els.category.value = "all";
+          els.org_type.value = "all";
           els.borough.value = "all";
           render();
         });
