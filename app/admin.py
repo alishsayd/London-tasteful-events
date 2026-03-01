@@ -22,7 +22,6 @@ from app.db import (
     get_strategies,
     init_db,
     normalize_org_taxonomy,
-    normalize_org_categories,
     set_strategy_active,
     update_org,
     upsert_org,
@@ -119,7 +118,7 @@ def _queue_reason(row: dict) -> str:
         missing.append("events URL")
     if not str(row.get("borough") or "").strip():
         missing.append("borough")
-    if not str(row.get("category") or "").strip():
+    if not str(row.get("org_type") or "").strip():
         missing.append("type")
     if missing:
         return "Missing " + ", ".join(missing)
@@ -485,7 +484,8 @@ def cleanup_discovery_now():
 @app.route("/api/admin/categories/normalize", methods=["POST"])
 def normalize_categories_now():
     data = request.json or {}
-    summary = normalize_org_categories(dry_run=bool(data.get("dry_run", False)))
+    summary = normalize_org_taxonomy(dry_run=bool(data.get("dry_run", False)))
+    summary["legacy_alias"] = True
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
 
 

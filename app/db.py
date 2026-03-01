@@ -310,22 +310,6 @@ CLEANUP_BAD_NAME_PHRASES = (
     "overview",
 )
 
-CATEGORY_NORMALIZATION_MAP = {
-    "lecture series": "Education",
-    "lecture venue": "Education",
-    "community cinema": "Cinema",
-    "cinema": "Cinema",
-    "bookshop": "Bookshops",
-    "bookshop events": "Bookshops",
-    "social community center": "Cultural centers",
-    "social community centre": "Cultural centers",
-    "community space": "Cultural centers",
-    "cultural centre": "Cultural centers",
-    "cultural center": "Cultural centers",
-    "cultural centres": "Cultural centers",
-    "cultural centers": "Cultural centers",
-}
-
 PRIMARY_TYPE_VALUES = ("venue", "institution", "organisation")
 
 ORG_TYPE_VALUES = (
@@ -500,7 +484,15 @@ def _primary_type_for_org_type(org_type: str | None) -> str:
 
 
 def _contains_any(value: str, hints: tuple[str, ...]) -> bool:
-    return any(hint in value for hint in hints)
+    return any(_contains_phrase(value, hint) for hint in hints)
+
+
+def _contains_phrase(value: str, hint: str) -> bool:
+    normalized_value = _normalize_name(value)
+    normalized_hint = _normalize_name(hint)
+    if not normalized_value or not normalized_hint:
+        return False
+    return bool(re.search(rf"(?:^|\s){re.escape(normalized_hint)}(?:\s|$)", normalized_value))
 
 
 def _infer_org_type_from_name(name: str | None) -> str:
@@ -516,15 +508,15 @@ def _infer_org_type_from_name(name: str | None) -> str:
         return "bookshop"
     if _contains_any(name_norm, ("cinema", "film")):
         return "cinema"
-    if "gallery" in name_norm:
+    if _contains_any(name_norm, ("gallery",)):
         return "gallery"
-    if _contains_any(name_norm, ("museum", "heritage")):
+    if _contains_any(name_norm, ("museum", "archive")):
         return "museum"
     if _contains_any(name_norm, ("theatre", "theater")):
         return "theatre"
-    if _contains_any(name_norm, ("makerspace", "maker space", "workshop", "studio")):
+    if _contains_any(name_norm, ("makerspace", "maker space", "workshop")):
         return "makers_space"
-    if "park" in name_norm:
+    if _contains_any(name_norm, ("park",)):
         return "park"
     if _contains_any(name_norm, ("garden", "conservatory")):
         return "garden"
@@ -557,7 +549,7 @@ def _resolve_org_type(
     if mapped == "__education__":
         if inferred in {"university", "learned_society"}:
             return inferred
-        return "learned_society"
+        return "cultural_centre"
     if mapped == "__cultural__":
         if inferred in {"university", "learned_society"}:
             return inferred
@@ -1457,7 +1449,7 @@ def get_review_queue_orgs(limit: int = 250) -> list[dict[str, Any]]:
                         WHEN coalesce(issue_state, 'none') = 'open' THEN 0
                         WHEN events_url IS NULL OR trim(events_url) = '' THEN 1
                         WHEN borough IS NULL OR trim(borough) = '' THEN 2
-                        WHEN category IS NULL OR trim(category) = '' THEN 3
+                        WHEN org_type IS NULL OR trim(org_type) = '' THEN 3
                         WHEN coalesce(consecutive_failures, 0) >= 3 THEN 4
                         WHEN coalesce(consecutive_empty_extracts, 0) >= 3 THEN 5
                         ELSE 6
@@ -1692,56 +1684,6 @@ def normalize_org_taxonomy(dry_run: bool = False) -> dict[str, Any]:
         "primary_type_transitions": primary_transitions,
         "null_org_type_count": null_org_type_count,
         "forbidden_org_type_count": forbidden_org_type_count,
-        "sample": updates[:50],
-    }
-
-
-def normalize_org_categories(dry_run: bool = False) -> dict[str, Any]:
-    with get_db() as conn:
-        rows = conn.execute(text("SELECT id, name, category FROM orgs ORDER BY id ASC")).mappings().all()
-
-    updates: list[dict[str, Any]] = []
-    transition_counts: dict[str, int] = {}
-
-    for row in rows:
-        old_raw = str(row.get("category") or "").strip()
-        old_norm = _normalize_category_value(old_raw)
-        name_norm = _normalize_name(row.get("name"))
-
-        target = CATEGORY_NORMALIZATION_MAP.get(old_norm)
-        if not target and old_norm == "other" and "soas" in name_norm:
-            target = "Education"
-
-        if not target:
-            continue
-        if old_raw == target:
-            continue
-
-        updates.append(
-            {
-                "id": int(row["id"]),
-                "name": row.get("name"),
-                "from": old_raw or None,
-                "to": target,
-            }
-        )
-        key = f"{old_raw or '(empty)'} -> {target}"
-        transition_counts[key] = transition_counts.get(key, 0) + 1
-
-    if not dry_run and updates:
-        with get_db() as conn:
-            for item in updates:
-                conn.execute(
-                    text("UPDATE orgs SET category = :category WHERE id = :org_id"),
-                    {"category": item["to"], "org_id": int(item["id"])},
-                )
-
-    return {
-        "ok": True,
-        "dry_run": bool(dry_run),
-        "scanned": len(rows),
-        "updated": len(updates),
-        "transitions": transition_counts,
         "sample": updates[:50],
     }
 
