@@ -280,12 +280,14 @@
         const borCounts = countBy(typeScoped, "borough", "Unspecified");
 
         els.org_type.innerHTML = `<option value="all">All types (${boroughScoped.length})</option>${types
-          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(orgTypeLabel(item))} (${typeCounts[item] || 0})</option>`)
+          .filter((item) => typeCounts[item])
+          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(orgTypeLabel(item))} (${typeCounts[item]})</option>`)
           .join("")}`;
         els.org_type.value = ui.org_type;
 
         els.borough.innerHTML = `<option value="all">All boroughs (${typeScoped.length})</option>${boroughs
-          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)} (${borCounts[item] || 0})</option>`)
+          .filter((item) => borCounts[item])
+          .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)} (${borCounts[item]})</option>`)
           .join("")}`;
         els.borough.value = ui.borough;
       }
