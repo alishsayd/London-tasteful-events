@@ -480,6 +480,8 @@ CATEGORY_CANONICAL_MAP = {
     "poetry readings": "Poetry readings",
     "park": "Park",
     "garden": "Garden",
+    "promoter": "Promoter",
+    "festival": "Festival",
     "one-off event": "One-off event",
     "other": "Other",
 }
@@ -496,6 +498,8 @@ DISCOVERY_ORG_TYPE_MAP = {
     "Theatre": "theatre",
     "Education": "learned_society",
     "Cultural centers": "cultural_centre",
+    "Promoter": "promoter",
+    "Festival": "festival",
     "Poetry readings": "organisation",
     "One-off event": "organisation",
     "Other": "organisation",

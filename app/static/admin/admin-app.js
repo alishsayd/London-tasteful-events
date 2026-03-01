@@ -11,6 +11,8 @@ const ORG_TYPES = [
   "cultural_centre",
   "university",
   "learned_society",
+  "promoter",
+  "festival",
   "organisation",
 ];
 
@@ -27,6 +29,8 @@ const ORG_TYPE_LABELS = {
   cultural_centre: "Cultural centre",
   university: "University",
   learned_society: "Learned society",
+  promoter: "Promoter",
+  festival: "Festival",
   organisation: "Organisation",
 };
 

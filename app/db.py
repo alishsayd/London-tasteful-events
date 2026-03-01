@@ -325,6 +325,8 @@ ORG_TYPE_VALUES = (
     "cultural_centre",
     "university",
     "learned_society",
+    "promoter",
+    "festival",
     "organisation",
 )
 
@@ -355,6 +357,8 @@ ORG_TYPE_LABELS = {
     "cultural_centre": "Cultural centre",
     "university": "University",
     "learned_society": "Learned society",
+    "promoter": "Promoter",
+    "festival": "Festival",
     "organisation": "Organisation",
 }
 
@@ -388,6 +392,8 @@ LEGACY_CATEGORY_TO_ORG_TYPE: dict[str, str] = {
     "one-off event": "__one_off__",
     "one_off_event": "__one_off__",
     "one-off_event": "__one_off__",
+    "promoter": "promoter",
+    "festival": "festival",
     "other": "__other__",
 }
 
@@ -522,6 +528,8 @@ def _infer_org_type_from_name(name: str | None) -> str:
         return "garden"
     if _contains_any(name_norm, ("music", "jazz", "orchestra")):
         return "live_music_venue"
+    if _contains_any(name_norm, ("festival", "biennale", "triennale", "carnival")):
+        return "festival"
     if _contains_any(name_norm, CULTURAL_CENTRE_NAME_HINTS):
         return "cultural_centre"
     return "organisation"
@@ -912,6 +920,61 @@ def _dedupe_and_enrich() -> None:
             _merge_group(conn, group_rows)
 
 
+def _org_type_values_sql() -> str:
+    return ", ".join(f"'{value}'" for value in ORG_TYPE_VALUES)
+
+
+def _ensure_postgres_org_type_constraint(conn) -> None:
+    allowed_values = _org_type_values_sql()
+    allowed_markers = [f"'{value}'" for value in ORG_TYPE_VALUES]
+    conn.execute(
+        text(
+            f"""
+            UPDATE orgs
+            SET org_type = 'organisation'
+            WHERE org_type IS NULL
+               OR trim(org_type) = ''
+               OR lower(trim(org_type)) NOT IN ({allowed_values})
+            """
+        )
+    )
+
+    checks = conn.execute(
+        text(
+            """
+            SELECT c.conname, pg_get_constraintdef(c.oid) AS constraint_def
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE c.contype = 'c'
+              AND t.relname = 'orgs'
+              AND n.nspname = current_schema()
+            """
+        )
+    ).mappings().all()
+
+    org_type_checks = [row for row in checks if "org_type" in str(row.get("constraint_def") or "").lower()]
+    if len(org_type_checks) == 1:
+        definition = str(org_type_checks[0].get("constraint_def") or "").lower()
+        if all(marker in definition for marker in allowed_markers):
+            return
+
+    for row in org_type_checks:
+        conname = str(row.get("conname") or "").strip()
+        if conname:
+            conn.execute(text(f'ALTER TABLE orgs DROP CONSTRAINT IF EXISTS "{conname}"'))
+
+    conn.execute(
+        text(
+            f"""
+            ALTER TABLE orgs
+            ADD CONSTRAINT orgs_org_type_check
+            CHECK (org_type IN ({allowed_values}))
+            """
+        )
+    )
+
+
 def init_db() -> None:
     """Create schema and bootstrap initial org data when database is empty."""
     org_id_def = "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -933,7 +996,7 @@ def init_db() -> None:
                     primary_type TEXT NOT NULL DEFAULT 'organisation'
                         CHECK(primary_type IN ('venue', 'institution', 'organisation')),
                     org_type TEXT NOT NULL DEFAULT 'organisation'
-                        CHECK(org_type IN ('bookshop', 'cinema', 'gallery', 'live_music_venue', 'theatre', 'museum', 'makers_space', 'park', 'garden', 'cultural_centre', 'university', 'learned_society', 'organisation')),
+                        CHECK(org_type IN ('bookshop', 'cinema', 'gallery', 'live_music_venue', 'theatre', 'museum', 'makers_space', 'park', 'garden', 'cultural_centre', 'university', 'learned_society', 'promoter', 'festival', 'organisation')),
                     parent_org_id BIGINT,
                     source TEXT,
                     source_domain TEXT,
@@ -999,6 +1062,8 @@ def init_db() -> None:
         conn.execute(text("UPDATE orgs SET issue_state = 'none' WHERE issue_state IS NULL"))
         conn.execute(text("UPDATE orgs SET org_type = 'organisation' WHERE org_type IS NULL OR trim(org_type) = ''"))
         conn.execute(text("UPDATE orgs SET primary_type = 'organisation' WHERE primary_type IS NULL OR trim(primary_type) = ''"))
+        if IS_POSTGRES:
+            _ensure_postgres_org_type_constraint(conn)
 
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_status ON orgs(status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_borough ON orgs(borough)"))
