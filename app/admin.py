@@ -10,29 +10,24 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request
 
 from app.db import (
-    cleanup_recent_discovery_garbage,
+    finish_import_run,
     get_active_orgs,
-    get_discovery_runs,
-    get_latest_discovery_run,
+    get_import_runs,
     get_org,
     get_public_orgs,
     get_review_queue_orgs,
     get_stats,
     init_db,
     normalize_org_taxonomy,
+    start_import_run,
     update_org,
     upsert_org,
 )
-from app.discover import run_discovery_cycle
 from app.import_org_csv import run_csv_import
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 init_db()
 
-
-# -----------------------------
-# Auth
-# -----------------------------
 
 def _auth_enabled() -> bool:
     return bool(str(os.getenv("ADMIN_PASSWORD") or "").strip())
@@ -60,18 +55,12 @@ def require_basic_auth():
     if not auth or (auth.type or "").lower() != "basic":
         return _auth_required()
 
-    provided_user = str(auth.username or "")
-    provided_pass = str(auth.password or "")
-    if not hmac.compare_digest(provided_user, expected_user):
+    if not hmac.compare_digest(str(auth.username or ""), expected_user):
         return _auth_required()
-    if not hmac.compare_digest(provided_pass, expected_pass):
+    if not hmac.compare_digest(str(auth.password or ""), expected_pass):
         return _auth_required()
     return None
 
-
-# -----------------------------
-# Helpers
-# -----------------------------
 
 def _json_safe(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
@@ -117,24 +106,27 @@ def _feedback_implies_reject(feedback: str) -> bool:
     lower = str(feedback or "").lower().strip()
     if not lower:
         return False
-    signals = [
-        "reject",
-        "no events",
-        "doesn't have events",
-        "does not have events",
-        "reservation-only",
-        "reservation only",
-        "restaurant only",
-        "remove this org",
-        "skip this org",
-        "not relevant",
-    ]
-    return any(token in lower for token in signals)
+    return any(
+        signal in lower
+        for signal in (
+            "reject",
+            "no events",
+            "doesn't have events",
+            "does not have events",
+            "reservation-only",
+            "reservation only",
+            "restaurant only",
+            "remove this org",
+            "skip this org",
+            "not relevant",
+        )
+    )
 
 
 def _state_payload() -> dict[str, Any]:
     queue = [_serialize_row(row) or {} for row in get_review_queue_orgs(limit=300)]
     active = [_serialize_row(row) or {} for row in get_active_orgs()]
+    runs = [_serialize_row(row) or {} for row in get_import_runs(limit=8)]
 
     for row in queue:
         row["queue_reason"] = _queue_reason(row)
@@ -144,19 +136,18 @@ def _state_payload() -> dict[str, Any]:
         "queue_total": len(queue),
         "queue": queue,
         "active_orgs": active,
-        "discovery_latest": _serialize_row(get_latest_discovery_run()),
-        "discovery_runs": [_serialize_row(row) for row in get_discovery_runs(limit=8)],
+        "import_runs": runs,
     }
 
 
 def _public_payload() -> dict[str, Any]:
     rows = get_public_orgs()
-    out = []
+    orgs = []
     for row in rows:
         name = str(row.get("name") or "").strip()
         if not name:
             continue
-        out.append(
+        orgs.append(
             {
                 "id": int(row["id"]),
                 "name": name,
@@ -167,23 +158,9 @@ def _public_payload() -> dict[str, Any]:
                 "homepage": str(row.get("homepage") or "").strip() or None,
             }
         )
-    out.sort(key=lambda item: item["name"].lower())
-    return {"orgs": out}
+    orgs.sort(key=lambda item: item["name"].lower())
+    return {"orgs": orgs}
 
-
-def _optional_int(data: dict[str, Any], key: str, default: int | None = None) -> int | None:
-    if key not in data:
-        return default
-    try:
-        value = int(data.get(key))
-        return value if value > 0 else default
-    except Exception:
-        return default
-
-
-# -----------------------------
-# Public routes
-# -----------------------------
 
 @app.route("/")
 @app.route("/browse")
@@ -211,10 +188,6 @@ def stats():
 def export():
     return jsonify(get_active_orgs())
 
-
-# -----------------------------
-# Admin API
-# -----------------------------
 
 @app.route("/api/admin/state")
 def admin_state():
@@ -312,47 +285,11 @@ def review_org(org_id: int):
     return jsonify({"ok": True, "org_id": org_id, "action": action, "state": _state_payload()})
 
 
-@app.route("/api/admin/discovery/run", methods=["POST"])
-def run_discovery_now():
-    data = request.json or {}
-    summary = run_discovery_cycle(
-        trigger="manual",
-        max_queries=_optional_int(data, "max_queries"),
-        max_results_per_query=_optional_int(data, "max_results_per_query"),
-        max_candidates=_optional_int(data, "max_candidates"),
-        request_timeout=_optional_int(data, "request_timeout"),
-        dry_run=bool(data.get("dry_run", False)),
-        search_provider="openai_web",
-    )
-    return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
-
-
-@app.route("/api/admin/discovery/cleanup", methods=["POST"])
-def cleanup_discovery_now():
-    data = request.json or {}
-    summary = cleanup_recent_discovery_garbage(
-        days=int(_optional_int(data, "days", 7) or 7),
-        dry_run=bool(data.get("dry_run", False)),
-        limit=int(_optional_int(data, "limit", 1000) or 1000),
-    )
-    return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
-
-
 @app.route("/api/admin/taxonomy/normalize", methods=["POST"])
 def normalize_taxonomy_now():
     data = request.json or {}
     summary = normalize_org_taxonomy(dry_run=bool(data.get("dry_run", False)))
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
-
-
-@app.route("/api/admin/discovery/runs")
-def discovery_runs():
-    return jsonify(
-        {
-            "latest": _serialize_row(get_latest_discovery_run()),
-            "runs": [_serialize_row(row) for row in get_discovery_runs(limit=20)],
-        }
-    )
 
 
 @app.route("/api/admin/import/csv", methods=["POST"])
@@ -369,13 +306,21 @@ def import_csv():
 
     apply_changes = str(request.form.get("apply") or "").strip().lower() in {"1", "true", "yes", "on"}
     source = str(request.form.get("source") or "").strip() or "csv_admin_import"
+    file_name = str(upload.filename or "").strip() or None
     csv_text = raw.decode("utf-8-sig", errors="replace")
 
+    run_id: int | None = None
     try:
+        run_id = start_import_run(trigger="manual", source=source, file_name=file_name, row_count=max(0, csv_text.count("\n") - 1))
         result = run_csv_import(csv_text=csv_text, apply=apply_changes, source=source)
+        finish_import_run(run_id, status="success", summary=result)
     except ValueError as exc:
+        if run_id:
+            finish_import_run(run_id, status="failed", error=str(exc))
         return jsonify({"error": str(exc)}), 400
     except Exception:
+        if run_id:
+            finish_import_run(run_id, status="failed", error="Failed to import CSV")
         app.logger.exception("CSV import failed")
         return jsonify({"error": "Failed to import CSV"}), 500
 
@@ -385,6 +330,10 @@ def import_csv():
     return jsonify(payload)
 
 
-if __name__ == "__main__":
+def main() -> None:
     init_db()
     app.run(host="127.0.0.1", port=int(os.getenv("PORT", "5000")), debug=True)
+
+
+if __name__ == "__main__":
+    main()

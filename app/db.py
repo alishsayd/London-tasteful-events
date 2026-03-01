@@ -4,7 +4,7 @@ import json
 import os
 import re
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -89,17 +89,20 @@ BLOCKED_DOMAIN_SUFFIXES = (
     "bsky.app",
     "bsky.social",
     "twitter.com",
+    "x.com",
     "instagram.com",
     "facebook.com",
     "youtube.com",
     "linkedin.com",
     "eventbrite.com",
     "ticketmaster.com",
+    "ticketmaster.co.uk",
     "feverup.com",
     "designmynight.com",
     "secretldn.com",
     "timeout.com",
     "culturecalling.com",
+    "eventindustrynews.com",
     "ianvisits.co.uk",
     "lectures.london",
     "theguardian.com",
@@ -108,14 +111,15 @@ BLOCKED_DOMAIN_SUFFIXES = (
     "wikipedia.org",
     "gov.uk",
 )
+
 BAD_NAME_PHRASES = (
-    "museums and collections",
     "book your tickets",
-    "courses and meetings",
-    "support ianvisits",
-    "subscribe to read",
-    "events listings",
+    "subscribe",
+    "support",
     "overview",
+    "events listings",
+    "museums and collections",
+    "courses and meetings",
 )
 
 
@@ -151,11 +155,6 @@ def _domain(value: Any) -> str:
     return (urlparse(canonical).netloc or "").lower().replace("www.", "") if canonical else ""
 
 
-def _blocked_domain(host: str) -> bool:
-    h = _clean(host).lower().replace("www.", "")
-    return bool(h) and any(h == suffix or h.endswith(f".{suffix}") for suffix in BLOCKED_DOMAIN_SUFFIXES)
-
-
 def _normalize_org_type(value: Any) -> str:
     raw = _token(value)
     if not raw:
@@ -166,12 +165,12 @@ def _normalize_org_type(value: Any) -> str:
     return snake if snake in ORG_TYPES else ""
 
 
-def _contains(text_value: str, term: str) -> bool:
-    return bool(re.search(rf"(?:^|\s){re.escape(term)}(?:\s|$)", text_value))
+def _contains(name: str, term: str) -> bool:
+    return bool(re.search(rf"(?:^|\s){re.escape(term)}(?:\s|$)", name))
 
 
-def _contains_any(text_value: str, terms: tuple[str, ...]) -> bool:
-    return any(_contains(text_value, term) for term in terms)
+def _contains_any(name: str, terms: tuple[str, ...]) -> bool:
+    return any(_contains(name, term) for term in terms)
 
 
 def _infer_org_type(name: Any) -> str:
@@ -227,11 +226,12 @@ def _normalize_primary(primary: Any, fallback_type: str) -> str:
 
 
 def _description(name: str, org_type: str, borough: str | None, existing: Any = None, candidate: Any = None) -> str:
-    e, c = _clean(existing), _clean(candidate)
-    if c and len(c) >= len(e):
-        return c
-    if e:
-        return e
+    current = _clean(existing)
+    next_value = _clean(candidate)
+    if next_value and len(next_value) >= len(current):
+        return next_value
+    if current:
+        return current
     kind = org_type.replace("_", " ")
     return f"{name} is a London {kind} in {borough}." if borough else f"{name} is a London {kind}."
 
@@ -248,21 +248,23 @@ def _queue_sql() -> str:
     )
 
 
-def _decode_run(row: dict[str, Any]) -> dict[str, Any]:
-    out = dict(row)
-    try:
-        out["details"] = json.loads(out.get("details_json") or "")
-    except Exception:
-        out["details"] = None
-    out.pop("details_json", None)
-    return out
-
-
 def _add_column(conn, table: str, spec: str) -> None:
     try:
-        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {'IF NOT EXISTS ' if IS_POSTGRES else ''}{spec}"))
+        prefix = "IF NOT EXISTS " if IS_POSTGRES else ""
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {prefix}{spec}"))
     except Exception:
         pass
+
+
+def _decode_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
+    return None
 
 
 def init_db() -> None:
@@ -274,8 +276,8 @@ def init_db() -> None:
             text(
                 f"CREATE TABLE IF NOT EXISTS orgs ("
                 f"id {org_id}, name TEXT NOT NULL, homepage TEXT, events_url TEXT, description TEXT, borough TEXT, "
-                f"primary_type TEXT NOT NULL DEFAULT 'organisation', org_type TEXT NOT NULL DEFAULT 'organisation', parent_org_id BIGINT, "
-                f"source TEXT, source_domain TEXT, status TEXT NOT NULL DEFAULT 'pending', notes TEXT, "
+                f"primary_type TEXT NOT NULL DEFAULT 'organisation', org_type TEXT NOT NULL DEFAULT 'organisation', "
+                f"parent_org_id BIGINT, source TEXT, source_domain TEXT, status TEXT NOT NULL DEFAULT 'pending', notes TEXT, "
                 f"created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, reviewed_at TIMESTAMP, "
                 f"active BOOLEAN NOT NULL DEFAULT {BINARY_TRUE}, crawl_paused BOOLEAN NOT NULL DEFAULT {BINARY_FALSE}, "
                 f"last_crawled_at TIMESTAMP, last_successful_event_extract_at TIMESTAMP, "
@@ -316,31 +318,33 @@ def init_db() -> None:
 
         conn.execute(
             text(
-                f"CREATE TABLE IF NOT EXISTS discovery_runs ("
-                f"id {run_id}, trigger TEXT NOT NULL DEFAULT 'scheduled', status TEXT NOT NULL DEFAULT 'running', "
-                f"query_count INTEGER NOT NULL DEFAULT 0, result_count INTEGER NOT NULL DEFAULT 0, upserted_count INTEGER NOT NULL DEFAULT 0, "
-                f"started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, finished_at TIMESTAMP, error TEXT, details_json TEXT"
+                f"CREATE TABLE IF NOT EXISTS import_runs ("
+                f"id {run_id}, trigger TEXT NOT NULL DEFAULT 'manual', source TEXT, file_name TEXT, status TEXT NOT NULL DEFAULT 'running', "
+                f"row_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, finished_at TIMESTAMP, "
+                f"summary_json TEXT, error TEXT"
                 f")"
             )
         )
+
         for spec in (
-            "trigger TEXT NOT NULL DEFAULT 'scheduled'",
+            "trigger TEXT NOT NULL DEFAULT 'manual'",
+            "source TEXT",
+            "file_name TEXT",
             "status TEXT NOT NULL DEFAULT 'running'",
-            "query_count INTEGER NOT NULL DEFAULT 0",
-            "result_count INTEGER NOT NULL DEFAULT 0",
-            "upserted_count INTEGER NOT NULL DEFAULT 0",
+            "row_count INTEGER NOT NULL DEFAULT 0",
             "finished_at TIMESTAMP",
+            "summary_json TEXT",
             "error TEXT",
-            "details_json TEXT",
         ):
-            _add_column(conn, "discovery_runs", spec)
+            _add_column(conn, "import_runs", spec)
 
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_runs_started ON discovery_runs(started_at DESC)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_runs_status ON discovery_runs(status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_import_runs_created ON import_runs(created_at DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_import_runs_status ON import_runs(status)"))
 
 
-def _find_candidates(conn, name: str, homepage: str | None, events_url: str | None, source_domain: str | None) -> list[dict[str, Any]]:
-    clauses, params = ["lower(name)=lower(:name)"], {"name": name}
+def _candidate_rows(conn, name: str, homepage: str | None, events_url: str | None, source_domain: str | None) -> list[dict[str, Any]]:
+    clauses = ["lower(name)=lower(:name)"]
+    params: dict[str, Any] = {"name": name}
     if homepage:
         clauses.insert(0, "homepage=:homepage")
         params["homepage"] = homepage
@@ -350,11 +354,12 @@ def _find_candidates(conn, name: str, homepage: str | None, events_url: str | No
     if source_domain:
         clauses.append("source_domain=:source_domain")
         params["source_domain"] = source_domain
+
     rows = conn.execute(text(f"SELECT * FROM orgs WHERE {' OR '.join(clauses)} ORDER BY id ASC LIMIT 20"), params).mappings().all()
     return [dict(row) for row in rows]
 
 
-def _pick_existing(rows: list[dict[str, Any]], homepage: str | None, events_url: str | None, source_domain: str | None) -> dict[str, Any] | None:
+def _pick_existing(rows: list[dict[str, Any]], homepage: str | None, events_url: str | None, source_domain: str | None, name: str) -> dict[str, Any] | None:
     if not rows:
         return None
     if events_url:
@@ -367,8 +372,12 @@ def _pick_existing(rows: list[dict[str, Any]], homepage: str | None, events_url:
                 return row
     if source_domain:
         for row in rows:
-            if _clean(row.get("source_domain")) == source_domain:
+            if _clean(row.get("source_domain")) == source_domain and _token(row.get("name")) == _token(name):
                 return row
+    key = _token(name)
+    for row in rows:
+        if _token(row.get("name")) == key:
+            return row
     return rows[0]
 
 
@@ -394,12 +403,13 @@ def upsert_org(
     boro = _clean(borough) or None
     src = _clean(source) or None
     src_domain = _domain(home) or _domain(events) or None
+
     resolved_type = _resolve_org_type(clean_name, org_type)
     resolved_primary = _normalize_primary(primary_type, resolved_type)
 
     with get_db() as conn:
-        rows = _find_candidates(conn, clean_name, home, events, src_domain)
-        existing = _pick_existing(rows, home, events, src_domain)
+        rows = _candidate_rows(conn, clean_name, home, events, src_domain)
+        existing = _pick_existing(rows, home, events, src_domain, clean_name)
 
         if existing:
             updates: dict[str, Any] = {}
@@ -419,16 +429,18 @@ def upsert_org(
             current_type = _resolve_org_type(existing.get("name"), existing.get("org_type"))
             if current_type == "organisation" and resolved_type != "organisation":
                 updates["org_type"] = resolved_type
-            next_type = updates.get("org_type") or current_type
-            next_primary = _primary_for(next_type)
-            if _clean(existing.get("primary_type")) != next_primary:
-                updates["primary_type"] = next_primary
-            next_desc = _description(clean_name, next_type, boro or _clean(existing.get("borough")) or None, existing.get("description"), description)
-            if next_desc != _clean(existing.get("description")):
-                updates["description"] = next_desc
+
+            target_type = updates.get("org_type") or current_type
+            target_primary = _primary_for(target_type)
+            if _clean(existing.get("primary_type")) != target_primary:
+                updates["primary_type"] = target_primary
+
+            merged_description = _description(clean_name, target_type, boro or _clean(existing.get("borough")) or None, existing.get("description"), description)
+            if merged_description != _clean(existing.get("description")):
+                updates["description"] = merged_description
 
             if updates:
-                set_sql = ", ".join(f"{k}=:{k}" for k in updates)
+                set_sql = ", ".join(f"{key}=:{key}" for key in updates)
                 conn.execute(text(f"UPDATE orgs SET {set_sql} WHERE id=:id"), {**updates, "id": int(existing["id"])})
             return int(existing["id"])
 
@@ -504,6 +516,7 @@ def update_org(org_id: int, **fields: Any) -> None:
         return
 
     current = get_org(org_id) or {}
+
     if "name" in updates:
         updates["name"] = _clean(updates.get("name")) or _clean(current.get("name"))
     if "homepage" in updates:
@@ -525,10 +538,10 @@ def update_org(org_id: int, **fields: Any) -> None:
         updates["primary_type"] = _normalize_primary(updates.get("primary_type"), fallback)
 
     if "description" in updates:
-        n = updates.get("name") or _clean(current.get("name"))
-        t = updates.get("org_type") or _resolve_org_type(current.get("name"), current.get("org_type"))
-        b = updates.get("borough") if "borough" in updates else _clean(current.get("borough")) or None
-        updates["description"] = _description(n, t, b, current.get("description"), updates.get("description"))
+        name_value = updates.get("name") or _clean(current.get("name"))
+        type_value = updates.get("org_type") or _resolve_org_type(current.get("name"), current.get("org_type"))
+        borough_value = updates.get("borough") if "borough" in updates else _clean(current.get("borough")) or None
+        updates["description"] = _description(name_value, type_value, borough_value, current.get("description"), updates.get("description"))
 
     if "parent_org_id" in updates:
         try:
@@ -537,11 +550,11 @@ def update_org(org_id: int, **fields: Any) -> None:
             updates["parent_org_id"] = None
 
     if "homepage" in updates or "events_url" in updates or "source_domain" not in updates:
-        h = updates.get("homepage") if "homepage" in updates else current.get("homepage")
-        e = updates.get("events_url") if "events_url" in updates else current.get("events_url")
-        updates["source_domain"] = _domain(h) or _domain(e) or None
+        homepage_value = updates.get("homepage") if "homepage" in updates else current.get("homepage")
+        events_value = updates.get("events_url") if "events_url" in updates else current.get("events_url")
+        updates["source_domain"] = _domain(homepage_value) or _domain(events_value) or None
 
-    set_sql = ", ".join(f"{k}=:{k}" for k in updates)
+    set_sql = ", ".join(f"{key}=:{key}" for key in updates)
     if "status" in updates:
         set_sql += ", reviewed_at=CASE WHEN :status='pending' THEN NULL ELSE CURRENT_TIMESTAMP END"
 
@@ -550,7 +563,8 @@ def update_org(org_id: int, **fields: Any) -> None:
 
 
 def get_active_orgs(limit: int | None = None) -> list[dict[str, Any]]:
-    sql, params = f"SELECT * FROM orgs WHERE {_active_sql()} ORDER BY name ASC", {}
+    sql = f"SELECT * FROM orgs WHERE {_active_sql()} ORDER BY name ASC"
+    params: dict[str, Any] = {}
     if limit and int(limit) > 0:
         sql += " LIMIT :limit"
         params["limit"] = int(limit)
@@ -596,132 +610,51 @@ def get_stats() -> dict[str, int]:
     return {**out, "total": total, "active_total": active_total, "queue_total": queue_total, "open_issues": open_issues}
 
 
-def get_latest_running_discovery_run() -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute(text("SELECT * FROM discovery_runs WHERE status='running' AND finished_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1")).mappings().first()
-    return _decode_run(dict(row)) if row else None
-
-
-def start_discovery_run(query_count: int, trigger: str = "scheduled", details: dict[str, Any] | None = None) -> int:
-    params = {"trigger": _clean(trigger) or "scheduled", "query_count": int(query_count), "details_json": json.dumps(details or {})}
-    with get_db() as conn:
-        if IS_POSTGRES:
-            row = conn.execute(text("INSERT INTO discovery_runs (trigger,status,query_count,details_json) VALUES (:trigger,'running',:query_count,:details_json) RETURNING id"), params).mappings().first()
-            if row:
-                return int(row["id"])
-        else:
-            conn.execute(text("INSERT INTO discovery_runs (trigger,status,query_count,details_json) VALUES (:trigger,'running',:query_count,:details_json)"), params)
-            row = conn.execute(text("SELECT last_insert_rowid() AS id")).mappings().first()
-            if row:
-                return int(row["id"])
-    raise RuntimeError("failed to start discovery run")
-
-
-def finish_discovery_run(run_id: int, status: str, result_count: int, upserted_count: int, error: str | None = None, details: dict[str, Any] | None = None) -> None:
-    safe_status = status if status in {"running", "success", "failed"} else "failed"
-    clauses = ["status=:status", "result_count=:result_count", "upserted_count=:upserted_count", "error=:error", "finished_at=CURRENT_TIMESTAMP"]
-    params: dict[str, Any] = {
-        "id": int(run_id),
-        "status": safe_status,
-        "result_count": int(result_count),
-        "upserted_count": int(upserted_count),
-        "error": _clean(error)[:4000] or None,
-    }
-    if details is not None:
-        clauses.insert(4, "details_json=:details_json")
-        params["details_json"] = json.dumps(details)
-    with get_db() as conn:
-        conn.execute(text(f"UPDATE discovery_runs SET {', '.join(clauses)} WHERE id=:id"), params)
-
-
-def get_latest_discovery_run() -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute(text("SELECT * FROM discovery_runs ORDER BY started_at DESC, id DESC LIMIT 1")).mappings().first()
-    return _decode_run(dict(row)) if row else None
-
-
-def get_discovery_runs(limit: int = 10) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute(text("SELECT * FROM discovery_runs ORDER BY started_at DESC, id DESC LIMIT :limit"), {"limit": int(limit)}).mappings().all()
-    return [_decode_run(dict(row)) for row in rows]
-
-
-def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit: int = 1000) -> dict[str, Any]:
-    since = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
-    with get_db() as conn:
-        rows = conn.execute(
-            text("SELECT * FROM orgs WHERE created_at >= :since AND lower(coalesce(source,'')) LIKE 'auto_discovery%' ORDER BY created_at DESC, id DESC LIMIT :limit"),
-            {"since": since, "limit": int(limit)},
-        ).mappings().all()
-
-    flagged: list[dict[str, Any]] = []
-    for row in rows:
-        r = dict(row)
-        host = _clean(r.get("source_domain")) or _domain(r.get("homepage")) or _domain(r.get("events_url"))
-        name_key = _token(r.get("name"))
-        reasons: list[str] = []
-        if _blocked_domain(host):
-            reasons.append("blocked_domain")
-        if any(p in name_key for p in BAD_NAME_PHRASES):
-            reasons.append("bad_name")
-        if reasons:
-            flagged.append({"row": r, "reasons": reasons})
-
-    updated = 0
-    newly_inactivated = 0
-    if not dry_run:
-        with get_db() as conn:
-            for item in flagged:
-                r, reasons = item["row"], item["reasons"]
-                updates: dict[str, Any] = {"issue_state": "open", "review_needed_reason": f"Discovery cleanup: {', '.join(reasons)}"}
-                if "blocked_domain" in reasons:
-                    if bool(r.get("active", True)):
-                        newly_inactivated += 1
-                    updates["active"] = False
-                    updates["crawl_paused"] = True
-                set_sql = ", ".join(f"{k}=:{k}" for k in updates)
-                conn.execute(text(f"UPDATE orgs SET {set_sql} WHERE id=:id"), {**updates, "id": int(r["id"])})
-                updated += 1
-
-    sample = [{"id": int(item["row"]["id"]), "name": _clean(item["row"].get("name")), "reasons": item["reasons"]} for item in flagged[:30]]
-    return {
-        "ok": True,
-        "dry_run": bool(dry_run),
-        "days": int(days),
-        "scanned": len(rows),
-        "flagged": len(flagged),
-        "updated": len(flagged) if dry_run else updated,
-        "newly_inactivated": 0 if dry_run else newly_inactivated,
-        "flagged_names": [_clean(item["row"].get("name")) for item in flagged],
-        "sample": sample,
-    }
-
-
 def normalize_org_taxonomy(dry_run: bool = False) -> dict[str, Any]:
     with get_db() as conn:
         rows = conn.execute(text("SELECT id,name,org_type,primary_type FROM orgs ORDER BY id ASC")).mappings().all()
 
     updates: list[dict[str, Any]] = []
     transitions: dict[str, int] = {}
+
     for row in rows:
         r = dict(row)
-        from_type = _clean(r.get("org_type"))
-        to_type = _resolve_org_type(r.get("name"), from_type)
-        to_primary = _primary_for(to_type)
-        from_primary = _clean(r.get("primary_type"))
-        if from_type == to_type and from_primary == to_primary:
+        current_type = _clean(r.get("org_type"))
+        target_type = _resolve_org_type(r.get("name"), current_type)
+        current_primary = _clean(r.get("primary_type"))
+        target_primary = _primary_for(target_type)
+
+        if current_type == target_type and current_primary == target_primary:
             continue
-        updates.append({"id": int(r["id"]), "from_org_type": from_type or "(empty)", "to_org_type": to_type, "from_primary_type": from_primary or "(empty)", "to_primary_type": to_primary})
-        key = f"{from_type or '(empty)'} -> {to_type}"
+
+        updates.append(
+            {
+                "id": int(r["id"]),
+                "from_org_type": current_type or "(empty)",
+                "to_org_type": target_type,
+                "from_primary_type": current_primary or "(empty)",
+                "to_primary_type": target_primary,
+            }
+        )
+        key = f"{current_type or '(empty)'} -> {target_type}"
         transitions[key] = transitions.get(key, 0) + 1
 
     if updates and not dry_run:
         with get_db() as conn:
-            conn.execute(text("UPDATE orgs SET org_type=:org_type, primary_type=:primary_type WHERE id=:id"), [{"id": item["id"], "org_type": item["to_org_type"], "primary_type": item["to_primary_type"]} for item in updates])
+            conn.execute(
+                text("UPDATE orgs SET org_type=:org_type, primary_type=:primary_type WHERE id=:id"),
+                [{"id": item["id"], "org_type": item["to_org_type"], "primary_type": item["to_primary_type"]} for item in updates],
+            )
 
     with get_db() as conn:
         null_org_type_count = int(conn.execute(text("SELECT COUNT(*) FROM orgs WHERE org_type IS NULL OR trim(org_type)=''")) .scalar_one())
-        forbidden_org_type_count = int(conn.execute(text("SELECT COUNT(*) FROM orgs WHERE lower(trim(coalesce(org_type,''))) IN ('one-off_event','one_off_event','other','poetry_readings')")).scalar_one())
+        forbidden_org_type_count = int(
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM orgs WHERE lower(trim(coalesce(org_type,''))) IN ('one-off_event','one_off_event','other','poetry_readings')"
+                )
+            ).scalar_one()
+        )
 
     return {
         "ok": True,
@@ -735,17 +668,64 @@ def normalize_org_taxonomy(dry_run: bool = False) -> dict[str, Any]:
     }
 
 
-def has_recent_running_discovery(max_age_minutes: int = 90) -> bool:
-    run = get_latest_running_discovery_run()
-    if not run:
-        return False
-    started = run.get("started_at")
-    if isinstance(started, str):
-        try:
-            started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
-            if started_dt.tzinfo is None:
-                started_dt = started_dt.replace(tzinfo=timezone.utc)
-            return (datetime.now(timezone.utc) - started_dt) < timedelta(minutes=max_age_minutes)
-        except Exception:
-            return True
-    return True
+def start_import_run(*, trigger: str = "manual", source: str | None = None, file_name: str | None = None, row_count: int = 0) -> int:
+    params = {
+        "trigger": _clean(trigger) or "manual",
+        "source": _clean(source) or None,
+        "file_name": _clean(file_name) or None,
+        "row_count": int(row_count),
+    }
+    with get_db() as conn:
+        if IS_POSTGRES:
+            row = conn.execute(
+                text(
+                    "INSERT INTO import_runs (trigger,source,file_name,status,row_count) "
+                    "VALUES (:trigger,:source,:file_name,'running',:row_count) RETURNING id"
+                ),
+                params,
+            ).mappings().first()
+            if row:
+                return int(row["id"])
+        else:
+            conn.execute(
+                text(
+                    "INSERT INTO import_runs (trigger,source,file_name,status,row_count) "
+                    "VALUES (:trigger,:source,:file_name,'running',:row_count)"
+                ),
+                params,
+            )
+            row = conn.execute(text("SELECT last_insert_rowid() AS id")).mappings().first()
+            if row:
+                return int(row["id"])
+    raise RuntimeError("failed to start import run")
+
+
+def finish_import_run(run_id: int, *, status: str, summary: dict[str, Any] | None = None, error: str | None = None) -> None:
+    safe_status = status if status in {"running", "success", "failed"} else "failed"
+    with get_db() as conn:
+        conn.execute(
+            text(
+                "UPDATE import_runs SET status=:status, summary_json=:summary_json, error=:error, finished_at=CURRENT_TIMESTAMP WHERE id=:id"
+            ),
+            {
+                "id": int(run_id),
+                "status": safe_status,
+                "summary_json": json.dumps(summary or {}),
+                "error": _clean(error)[:4000] or None,
+            },
+        )
+
+
+def get_import_runs(limit: int = 10) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            text("SELECT * FROM import_runs ORDER BY created_at DESC, id DESC LIMIT :limit"),
+            {"limit": int(limit)},
+        ).mappings().all()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["summary"] = _decode_json(item.get("summary_json"))
+        item.pop("summary_json", None)
+        out.append(item)
+    return out
