@@ -133,6 +133,10 @@ def _queue_condition_sql() -> str:
             issue_state = 'open'
             OR events_url IS NULL
             OR trim(events_url) = ''
+            OR borough IS NULL
+            OR trim(borough) = ''
+            OR category IS NULL
+            OR trim(category) = ''
             OR coalesce(consecutive_failures, 0) >= 3
             OR coalesce(consecutive_empty_extracts, 0) >= 3
         )
@@ -977,9 +981,11 @@ def get_review_queue_orgs(limit: int = 250) -> list[dict[str, Any]]:
                     CASE
                         WHEN coalesce(issue_state, 'none') = 'open' THEN 0
                         WHEN events_url IS NULL OR trim(events_url) = '' THEN 1
-                        WHEN coalesce(consecutive_failures, 0) >= 3 THEN 2
-                        WHEN coalesce(consecutive_empty_extracts, 0) >= 3 THEN 3
-                        ELSE 4
+                        WHEN borough IS NULL OR trim(borough) = '' THEN 2
+                        WHEN category IS NULL OR trim(category) = '' THEN 3
+                        WHEN coalesce(consecutive_failures, 0) >= 3 THEN 4
+                        WHEN coalesce(consecutive_empty_extracts, 0) >= 3 THEN 5
+                        ELSE 6
                     END,
                     coalesce(consecutive_failures, 0) DESC,
                     coalesce(consecutive_empty_extracts, 0) DESC,

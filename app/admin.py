@@ -112,8 +112,15 @@ def _queue_reason(row: dict) -> str:
     if custom_reason:
         return custom_reason
 
+    missing = []
     if not str(row.get("events_url") or "").strip():
-        return "Missing events URL"
+        missing.append("events URL")
+    if not str(row.get("borough") or "").strip():
+        missing.append("borough")
+    if not str(row.get("category") or "").strip():
+        missing.append("type")
+    if missing:
+        return "Missing " + ", ".join(missing)
 
     failures = int(row.get("consecutive_failures") or 0)
     if failures >= 3:
