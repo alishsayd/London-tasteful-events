@@ -208,8 +208,8 @@ def _queue_condition_sql() -> str:
             OR trim(events_url) = ''
             OR borough IS NULL
             OR trim(borough) = ''
-            OR category IS NULL
-            OR trim(category) = ''
+            OR org_type IS NULL
+            OR trim(org_type) = ''
             OR coalesce(consecutive_failures, 0) >= 3
             OR coalesce(consecutive_empty_extracts, 0) >= 3
         )
@@ -718,8 +718,9 @@ def _merge_group(conn, group_rows: list[dict[str, Any]]) -> None:
         if not str(merged.get("notes") or "").strip() and str(candidate.get("notes") or "").strip():
             merged["notes"] = candidate.get("notes")
 
-        merged["active"] = bool(merged.get("active", True) or candidate.get("active", True))
-        merged["crawl_paused"] = bool(merged.get("crawl_paused", False) and candidate.get("crawl_paused", False))
+        # Preserve explicit deactivation decisions: once inactive, remain inactive.
+        merged["active"] = bool(merged.get("active", True) and candidate.get("active", True))
+        merged["crawl_paused"] = bool(merged.get("crawl_paused", False) or candidate.get("crawl_paused", False))
 
         merged["consecutive_failures"] = max(int(merged.get("consecutive_failures") or 0), int(candidate.get("consecutive_failures") or 0))
         merged["consecutive_empty_extracts"] = max(
@@ -902,9 +903,12 @@ def _dedupe_and_enrich() -> None:
                     candidate.get("domain")
                 )
                 program_variant = _has_program_variant_suffix(anchor.get("name"), candidate.get("name"))
-                missing_events_asymmetry = bool(anchor.get("has_events_url")) != bool(candidate.get("has_events_url"))
-
-                if low_trust_asymmetry or program_variant or missing_events_asymmetry:
+                # Keep cross-domain merges conservative:
+                # - low_trust_asymmetry is safe by itself
+                # - program_variant is safe by itself
+                # Missing-events asymmetry alone is intentionally ignored to
+                # avoid unrelated merges.
+                if low_trust_asymmetry or program_variant:
                     union(anchor_id, candidate_id)
 
         groups: dict[int, list[dict[str, Any]]] = {}
