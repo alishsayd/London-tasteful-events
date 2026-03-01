@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup
 
 from app.db import (
     add_strategy,
+    cleanup_recent_discovery_garbage,
     finish_discovery_run,
     get_cached_value,
     get_latest_running_discovery_run,
@@ -49,7 +50,7 @@ USER_AGENT = (
 )
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
-CACHE_VERSION = "v4"
+CACHE_VERSION = "v5"
 QUERY_CACHE_TTL_DAYS = 30
 SERP_CACHE_TTL_DAYS = 30
 BUNDLE_CACHE_TTL_DAYS = 90
@@ -283,6 +284,8 @@ NON_ENTITY_DOMAIN_SUFFIXES = (
     "guardian.co.uk",
     "ft.com",
     "wikipedia.org",
+    "linkedin.com",
+    "uk.linkedin.com",
     "gov.uk",
     "londonist.com",
     "visitlondon.com",
@@ -305,6 +308,8 @@ LEAD_SOURCE_DOMAIN_SUFFIXES = (
     "guardian.co.uk",
     "ft.com",
     "wikipedia.org",
+    "linkedin.com",
+    "uk.linkedin.com",
     "gov.uk",
 )
 
@@ -318,6 +323,8 @@ REJECT_ENTITY_DOMAIN_SUFFIXES = (
     "instagram.com",
     "facebook.com",
     "youtube.com",
+    "linkedin.com",
+    "uk.linkedin.com",
     "eventbrite.com",
     "ticketmaster.co.uk",
     "ticketmaster.com",
@@ -411,6 +418,9 @@ CATEGORY_MAP = {
 }
 
 BAD_NAME_PHRASES = {
+    "museums and collections",
+    "programmes and exhibitions",
+    "current events",
     "book your tickets",
     "courses and meetings",
     "support",
@@ -421,6 +431,27 @@ BAD_NAME_PHRASES = {
     "event industry news",
     "overview",
 }
+
+GENERIC_ENTITY_NAME_EXACT = {
+    "events",
+    "what s on",
+    "whats on",
+    "about",
+    "visit",
+    "home",
+    "calendar",
+    "programmes and exhibitions",
+    "museums and collections",
+    "current events",
+}
+
+GENERIC_ENTITY_NAME_CONTAINS = (
+    "programmes and exhibitions",
+    "museums and collections",
+    "latest events",
+    "all events",
+    "book tickets",
+)
 
 
 def _clean_text(value: str | None) -> str:
@@ -467,6 +498,19 @@ def _domain_matches_suffix(domain: str | None, suffixes: tuple[str, ...]) -> boo
     if not value:
         return False
     return any(value == suffix or value.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def _domain_is_low_trust(domain: str | None) -> bool:
+    return _domain_matches_suffix(domain, REJECT_ENTITY_DOMAIN_SUFFIXES)
+
+
+def _looks_like_generic_entity_name(name: str | None) -> bool:
+    normalized = _normalize_name(name)
+    if not normalized:
+        return True
+    if normalized in GENERIC_ENTITY_NAME_EXACT:
+        return True
+    return any(phrase in normalized for phrase in GENERIC_ENTITY_NAME_CONTAINS)
 
 
 def _canonicalize_url(url: str | None, *, include_path: bool = True) -> str:
@@ -1791,15 +1835,22 @@ def _guess_name_from_bundle(bundle: dict[str, Any]) -> str | None:
     h1 = _clean_text(bundle.get("h1"))
 
     candidates: list[str] = []
+    for hint in bundle.get("seed_name_hints", [])[:6]:
+        clean_hint = _clean_text(hint)
+        if clean_hint:
+            candidates.append(clean_hint)
     if h1:
         candidates.append(h1)
     if title:
+        split_used = False
         for sep in ("|", " - ", "—", "·", ":"):
             if sep in title:
                 parts = [_clean_text(part) for part in title.split(sep) if _clean_text(part)]
                 candidates.extend(parts)
-            else:
-                candidates.append(title)
+                split_used = True
+                break
+        if not split_used:
+            candidates.append(title)
     for heading in bundle.get("headings", [])[:8]:
         if heading:
             candidates.append(_clean_text(heading))
@@ -1820,6 +1871,8 @@ def _guess_name_from_bundle(bundle: dict[str, Any]) -> str | None:
         if _word_count(name) == 0 or _word_count(name) > 8:
             continue
         if len(name) < 3 or len(name) > 100:
+            continue
+        if _looks_like_generic_entity_name(name):
             continue
         if _looks_like_article_title(name):
             continue
@@ -1851,6 +1904,8 @@ def _is_valid_entity_name(name: str | None) -> bool:
     lower = _normalize_name(clean)
     if not lower:
         return False
+    if _looks_like_generic_entity_name(lower):
+        return False
     if _looks_like_article_title(lower):
         return False
     if any(phrase in lower for phrase in BAD_NAME_PHRASES):
@@ -1867,7 +1922,7 @@ def _heuristic_gate(bundle: dict[str, Any]) -> dict[str, Any]:
     if not domain:
         return {"decision": "reject", "reason_codes": ["missing_domain"]}
 
-    if _domain_matches_suffix(domain, REJECT_ENTITY_DOMAIN_SUFFIXES):
+    if _domain_is_low_trust(domain):
         return {"decision": "reject", "reason_codes": ["blocked_domain_suffix"]}
 
     blob = " ".join(
@@ -1930,6 +1985,9 @@ def _heuristic_gate(bundle: dict[str, Any]) -> dict[str, Any]:
     if not _is_valid_entity_name(name_guess):
         negative += 2
         reason_codes.append("weak_name_signal")
+    if _looks_like_generic_entity_name(name_guess):
+        negative += 3
+        reason_codes.append("generic_name_signal")
 
     one_off_score = 0
     if any(keyword in normalized_blob for keyword in ONE_OFF_EVENT_KEYWORDS):
@@ -2120,8 +2178,12 @@ def _finalize_entity_record(
     )
     if not homepage:
         return None
+    if _domain_is_low_trust(_domain(homepage)):
+        return None
 
     events_url = _canonicalize_url(entity.get("events_url")) or _pick_events_url(bundle) or homepage
+    if _domain_is_low_trust(_domain(events_url)):
+        events_url = homepage
 
     blob = " ".join(
         [
@@ -2586,6 +2648,7 @@ def run_discovery_cycle(
         final_records = _dedupe_records(accepted_records, max_items=max_candidates)
 
         upserted_count = 0
+        cleanup_summary: dict[str, Any] | None = None
         if not dry_run:
             for item in final_records:
                 try:
@@ -2601,6 +2664,18 @@ def run_discovery_cycle(
                     upserted_count += 1
                 except Exception:
                     continue
+
+            if _env_bool("DISCOVERY_AUTO_CLEANUP", True):
+                cleanup_days = _env_int("DISCOVERY_AUTO_CLEANUP_DAYS", 7)
+                cleanup_limit = max(1000, max_candidates * 6)
+                try:
+                    cleanup_summary = cleanup_recent_discovery_garbage(
+                        days=cleanup_days,
+                        dry_run=False,
+                        limit=cleanup_limit,
+                    )
+                except Exception as exc:
+                    cleanup_summary = {"ok": False, "error": str(exc)[:300]}
 
         place_count = sum(1 for item in final_records if item.get("entity_kind") == "place")
         one_off_count = sum(1 for item in final_records if item.get("entity_kind") == "one_off_event")
@@ -2635,6 +2710,11 @@ def run_discovery_cycle(
             "dry_run": dry_run,
             "search_provider": "duckduckgo",
             "max_urls_per_domain": max_urls_per_domain,
+            "auto_cleanup_enabled": bool(_env_bool("DISCOVERY_AUTO_CLEANUP", True) and not dry_run),
+            "auto_cleanup_scanned": int((cleanup_summary or {}).get("scanned") or 0),
+            "auto_cleanup_flagged": int((cleanup_summary or {}).get("flagged") or 0),
+            "auto_cleanup_updated": int((cleanup_summary or {}).get("updated") or 0),
+            "auto_cleanup_error": (cleanup_summary or {}).get("error"),
             "cache_metrics": {
                 "serp_cache_hits": metrics.get("serp_cache_hits", 0),
                 "serp_cache_misses": metrics.get("serp_cache_misses", 0),

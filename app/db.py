@@ -199,6 +199,15 @@ def _issue_priority(value: str | None) -> int:
 CLEANUP_BLOCKED_DOMAIN_SUFFIXES = (
     "ianvisits.co.uk",
     "lectures.london",
+    "wikipedia.org",
+    "linkedin.com",
+    "uk.linkedin.com",
+    "instagram.com",
+    "facebook.com",
+    "x.com",
+    "twitter.com",
+    "youtube.com",
+    "tiktok.com",
     "github.com",
     "bsky.app",
     "bsky.social",
@@ -212,6 +221,9 @@ CLEANUP_BLOCKED_DOMAIN_SUFFIXES = (
 )
 
 CLEANUP_BAD_NAME_PHRASES = (
+    "museums and collections",
+    "programmes and exhibitions",
+    "current events",
     "book your tickets",
     "courses and meetings",
     "support ianvisits",
@@ -221,12 +233,39 @@ CLEANUP_BAD_NAME_PHRASES = (
     "overview",
 )
 
+LOW_TRUST_SOURCE_DOMAIN_SUFFIXES = (
+    "wikipedia.org",
+    "linkedin.com",
+    "uk.linkedin.com",
+    "instagram.com",
+    "facebook.com",
+    "x.com",
+    "twitter.com",
+    "youtube.com",
+    "tiktok.com",
+    "github.com",
+    "bsky.app",
+    "bsky.social",
+    "blueskyweb.xyz",
+    "eventindustrynews.com",
+    "culturecalling.com",
+    "theguardian.com",
+    "guardian.co.uk",
+    "ft.com",
+    "ianvisits.co.uk",
+    "lectures.london",
+)
+
 
 def _domain_matches_suffix(value: str | None, suffixes: tuple[str, ...]) -> bool:
     host = str(value or "").strip().lower().replace("www.", "")
     if not host:
         return False
     return any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def _is_low_trust_source_domain(value: str | None) -> bool:
+    return _domain_matches_suffix(value, LOW_TRUST_SOURCE_DOMAIN_SUFFIXES)
 
 
 def _discovery_cleanup_reasons(row: dict[str, Any]) -> list[str]:
@@ -251,6 +290,8 @@ def _discovery_cleanup_reasons(row: dict[str, Any]) -> list[str]:
             reasons.append("navigation/paywall or non-entity title")
         if name_key in {"github", "bluesky", "bluesky social", "guardian", "the guardian"}:
             reasons.append("platform/publisher title")
+        if name_key in {"events", "what s on", "whats on", "about", "visit", "home"}:
+            reasons.append("generic navigation title")
         if name_key.startswith(("book ", "support ", "subscribe ")):
             reasons.append("cta title")
 
@@ -449,6 +490,29 @@ def _dedupe_and_enrich() -> None:
                     seen[key] = row_id
                 else:
                     union(row_id, existing)
+
+        # Cross-domain dedupe safety:
+        # If two rows have exactly the same normalized name and one comes from a low-trust domain
+        # (e.g., wikipedia/linkedin) while another does not, merge them.
+        by_exact_name: dict[str, list[tuple[int, str]]] = {}
+        for row in rows:
+            row_id = int(row["id"])
+            name_key = _normalize_name(row.get("name"))
+            if not name_key:
+                continue
+            domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url")) or ""
+            by_exact_name.setdefault(name_key, []).append((row_id, str(domain).lower()))
+
+        for items in by_exact_name.values():
+            if len(items) < 2:
+                continue
+            low_ids = [row_id for row_id, domain in items if _is_low_trust_source_domain(domain)]
+            high_ids = [row_id for row_id, domain in items if not _is_low_trust_source_domain(domain)]
+            if not low_ids or not high_ids:
+                continue
+            anchor = high_ids[0]
+            for row_id in low_ids:
+                union(anchor, row_id)
 
         groups: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
@@ -713,6 +777,7 @@ def upsert_org(
         candidates = conn.execute(text(query), params).mappings().all()
 
         existing = None
+        fallback_low_trust = None
         for row in candidates:
             row_name = _normalize_name(row.get("name"))
             row_domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url"))
@@ -724,6 +789,20 @@ def upsert_org(
                 if not row_domain or not source_domain:
                     existing = dict(row)
                     break
+                exact_name_match = bool(row_name and norm_name and row_name == norm_name)
+                if exact_name_match and row_domain != source_domain:
+                    row_low = _is_low_trust_source_domain(row_domain)
+                    source_low = _is_low_trust_source_domain(source_domain)
+                    # Merge exact same-name entities across domains when one side is low-trust.
+                    if row_low != source_low:
+                        if not row_low:
+                            existing = dict(row)
+                            break
+                        if fallback_low_trust is None:
+                            fallback_low_trust = dict(row)
+
+        if not existing and fallback_low_trust is not None:
+            existing = fallback_low_trust
 
         if existing:
             updates: dict[str, Any] = {}
@@ -956,7 +1035,7 @@ def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit
             text(
                 """
                 SELECT * FROM orgs
-                WHERE source = 'auto_discovery'
+                WHERE source LIKE 'auto_discovery%'
                 ORDER BY created_at DESC, id DESC
                 LIMIT :limit
                 """
