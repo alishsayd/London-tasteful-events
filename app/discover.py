@@ -49,7 +49,7 @@ USER_AGENT = (
 )
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
-CACHE_VERSION = "v3"
+CACHE_VERSION = "v4"
 QUERY_CACHE_TTL_DAYS = 30
 SERP_CACHE_TTL_DAYS = 30
 BUNDLE_CACHE_TTL_DAYS = 90
@@ -145,6 +145,10 @@ QUERY_FAMILIES = [
     "creative learning centres",
     "museum late openings venues",
     "galleries with talks programmes",
+    "parks with events programmes",
+    "public parks with cultural events",
+    "friends of park events",
+    "park talks and walks programmes",
     "gardens with evening events",
     "conservatories with events",
     "wine tasting venues",
@@ -162,18 +166,18 @@ QUERY_FAMILIES = [
 ]
 
 ONE_OFF_EVENT_FAMILIES = [
-    "major food festivals",
-    "major design festivals",
-    "major architecture festivals",
-    "major film festivals",
-    "major literary festivals",
-    "major art fairs",
-    "major craft fairs",
-    "major music festivals",
-    "major 5K runs",
-    "major 10K runs",
+    "food festivals",
+    "design festivals",
+    "architecture festivals",
+    "film festivals",
+    "literary festivals",
+    "art fairs",
+    "craft fairs",
+    "music festivals",
+    "5K runs",
+    "10K runs",
     "half marathons",
-    "large charity runs",
+    "charity runs",
     "citywide cultural festivals",
     "open house festivals",
     "public outdoor cultural festivals",
@@ -199,6 +203,8 @@ EVENT_LINK_HINTS = (
     "programme",
     "program",
     "calendar",
+    "activities",
+    "activities-events",
     "listings",
     "screenings",
     "talks",
@@ -366,6 +372,7 @@ PLACE_KEYWORDS = (
     "bookshop",
     "library",
     "venue",
+    "park",
 )
 
 ONE_OFF_EVENT_KEYWORDS = (
@@ -398,6 +405,7 @@ CATEGORY_MAP = {
     "cultural centre": ["cultural centre", "cultural center", "cultural institute", "diaspora"],
     "community space": ["community", "charity", "social", "collective"],
     "lecture venue": ["lecture", "talk", "ideas", "debate", "public programme"],
+    "park": ["park", "friends of", "outdoor events", "walks programme"],
     "garden": ["garden", "conservatory", "horticulture"],
     "one-off event": ["festival", "5k", "10k", "marathon", "fair", "biennale", "expo"],
 }
@@ -873,20 +881,87 @@ def _template_queries(
             }
         )
 
-    for family in families:
+    def _pool_for_place_family(family: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for stem in QUERY_STEMS:
-            _push(stem.format(family=family), "template", "place", family)
+            out.append(
+                {
+                    "query": stem.format(family=family),
+                    "source": "template",
+                    "entity_kind_hint": "place",
+                    "theme": family,
+                }
+            )
         for region in region_pool:
-            _push(f"10 {family} in {region}", "template_region", "place", family)
-            _push(f"best places for {family} events in {region}", "template_region", "place", family)
+            out.append(
+                {
+                    "query": f"10 {family} in {region}",
+                    "source": "template_region",
+                    "entity_kind_hint": "place",
+                    "theme": family,
+                }
+            )
+            out.append(
+                {
+                    "query": f"best places for {family} events in {region}",
+                    "source": "template_region",
+                    "entity_kind_hint": "place",
+                    "theme": family,
+                }
+            )
+        return out
 
-    for family in one_off_families:
+    def _pool_for_one_off_family(family: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for stem in ONE_OFF_QUERY_STEMS:
-            _push(stem.format(family=family), "template_one_off", "one_off_event", family)
+            out.append(
+                {
+                    "query": stem.format(family=family),
+                    "source": "template_one_off",
+                    "entity_kind_hint": "one_off_event",
+                    "theme": family,
+                }
+            )
         for region in region_pool[:6]:
-            _push(f"major {family} in {region} official site", "template_one_off_region", "one_off_event", family)
+            out.append(
+                {
+                    "query": f"major {family} in {region} official site",
+                    "source": "template_one_off_region",
+                    "entity_kind_hint": "one_off_event",
+                    "theme": family,
+                }
+            )
+        return out
 
-    return generated[: max(max_queries, 1)]
+    place_pools = [_pool_for_place_family(family) for family in families]
+    one_off_pools = [_pool_for_one_off_family(family) for family in one_off_families]
+
+    # Round-robin across families so small/medium max_queries still include diverse themes.
+    all_pools = place_pools + one_off_pools
+    positions = [0 for _ in all_pools]
+    target = max(max_queries, 1)
+
+    while len(generated) < target:
+        progressed = False
+        for idx, pool in enumerate(all_pools):
+            if len(generated) >= target:
+                break
+            position = positions[idx]
+            if position >= len(pool):
+                continue
+            positions[idx] += 1
+            item = pool[position]
+            _push(
+                item.get("query", ""),
+                item.get("source", "template"),
+                item.get("entity_kind_hint", "place"),
+                item.get("theme"),
+            )
+            progressed = True
+        if not progressed:
+            break
+
+    return generated
 
 
 def generate_queries(boroughs=None, categories=None):
