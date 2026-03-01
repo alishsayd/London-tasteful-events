@@ -1,4 +1,4 @@
-"""Flask admin panel for reviewing candidate orgs."""
+"""Flask admin and public app for London Tasteful Events."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import argparse
 import hmac
 import os
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request
 
 from app.db import (
-    add_strategy,
     cleanup_recent_discovery_garbage,
     get_active_orgs,
     get_discovery_runs,
@@ -19,10 +19,8 @@ from app.db import (
     get_public_orgs,
     get_review_queue_orgs,
     get_stats,
-    get_strategies,
     init_db,
     normalize_org_taxonomy,
-    set_strategy_active,
     update_org,
     upsert_org,
 )
@@ -34,6 +32,10 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # Ensure schema exists when running under WSGI/Gunicorn.
 init_db()
 
+
+# -----------------------------
+# Auth helpers
+# -----------------------------
 
 def _auth_required() -> Response:
     return Response(
@@ -48,8 +50,7 @@ def _auth_enabled() -> bool:
 
 
 def _is_allowed_without_auth(path: str) -> bool:
-    public_paths = {"/", "/browse", "/healthz", "/favicon.ico"}
-    return path in public_paths
+    return path in {"/", "/browse", "/healthz", "/favicon.ico"}
 
 
 @app.before_request
@@ -63,6 +64,7 @@ def require_basic_auth():
     expected_username = str(os.getenv("ADMIN_USERNAME") or "admin").strip() or "admin"
     expected_password = str(os.getenv("ADMIN_PASSWORD") or "").strip()
     auth = request.authorization
+
     if not auth or (auth.type or "").lower() != "basic":
         return _auth_required()
 
@@ -75,7 +77,11 @@ def require_basic_auth():
     return None
 
 
-def _json_safe(value):
+# -----------------------------
+# Serialization helpers
+# -----------------------------
+
+def _json_safe(value: Any):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
@@ -87,15 +93,14 @@ def _serialize_row(row: dict | None) -> dict | None:
     return {key: _json_safe(value) for key, value in row.items()}
 
 
-def _parse_dt(value) -> datetime | None:
+def _parse_dt(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
     if isinstance(value, str) and value:
-        normalized = value.replace("Z", "+00:00")
         try:
-            parsed = datetime.fromisoformat(normalized)
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
             return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
         except Exception:
             return None
@@ -139,8 +144,8 @@ def _queue_reason(row: dict) -> str:
 
 
 def _feedback_implies_reject(feedback: str) -> bool:
-    lower = str(feedback or "").lower()
-    if not lower.strip():
+    lower = str(feedback or "").lower().strip()
+    if not lower:
         return False
 
     reject_signals = [
@@ -163,29 +168,26 @@ def _feedback_implies_reject(feedback: str) -> bool:
 def _state_payload() -> dict:
     queue_rows = get_review_queue_orgs(limit=300)
     active_rows = get_active_orgs()
-    latest_discovery = get_latest_discovery_run()
-    recent_discovery = get_discovery_runs(limit=8)
 
-    queue_payload = []
+    queue_payload: list[dict[str, Any]] = []
     for row in queue_rows:
-        serialized = _serialize_row(row)
-        serialized["queue_reason"] = _queue_reason(row)
-        queue_payload.append(serialized)
+        item = _serialize_row(row) or {}
+        item["queue_reason"] = _queue_reason(row)
+        queue_payload.append(item)
 
-    active_payload = []
+    active_payload: list[dict[str, Any]] = []
     for row in active_rows:
-        serialized = _serialize_row(row)
-        serialized["is_new"] = _is_new_org(row)
-        active_payload.append(serialized)
+        item = _serialize_row(row) or {}
+        item["is_new"] = _is_new_org(row)
+        active_payload.append(item)
 
     return {
         "stats": get_stats(),
         "queue_total": len(queue_payload),
         "queue": queue_payload,
         "active_orgs": active_payload,
-        "strategies": [_serialize_row(item) for item in get_strategies()],
-        "discovery_latest": _serialize_row(latest_discovery),
-        "discovery_runs": [_serialize_row(item) for item in recent_discovery],
+        "discovery_latest": _serialize_row(get_latest_discovery_run()),
+        "discovery_runs": [_serialize_row(item) for item in get_discovery_runs(limit=8)],
     }
 
 
@@ -197,9 +199,6 @@ def _public_payload() -> dict:
         if not name:
             continue
 
-        events_url = str(row.get("events_url") or "").strip() or None
-        homepage = str(row.get("homepage") or "").strip() or None
-
         orgs.append(
             {
                 "id": int(row["id"]),
@@ -207,14 +206,18 @@ def _public_payload() -> dict:
                 "borough": str(row.get("borough") or "").strip() or "Unspecified",
                 "org_type": str(row.get("org_type") or "").strip() or "organisation",
                 "primary_type": str(row.get("primary_type") or "").strip() or "organisation",
-                "events_url": events_url,
-                "homepage": homepage,
+                "events_url": str(row.get("events_url") or "").strip() or None,
+                "homepage": str(row.get("homepage") or "").strip() or None,
             }
         )
 
     orgs.sort(key=lambda item: (item["org_type"].lower(), item["borough"].lower(), item["name"].lower()))
     return {"orgs": orgs}
 
+
+# -----------------------------
+# Routes: public + admin
+# -----------------------------
 
 @app.route("/")
 @app.route("/browse")
@@ -224,8 +227,7 @@ def browse():
 
 @app.route("/admin")
 def home():
-    payload = _state_payload()
-    return render_template("admin.html", stats=get_stats(), payload=payload)
+    return render_template("admin.html", stats=get_stats(), payload=_state_payload())
 
 
 @app.route("/api/orgs", methods=["POST"])
@@ -241,15 +243,13 @@ def add_org():
             events_url=data.get("events_url"),
             description=data.get("description"),
             borough=data.get("borough"),
-            category=data.get("category"),
             org_type=data.get("org_type") or data.get("type"),
             primary_type=data.get("primary_type"),
             parent_org_id=data.get("parent_org_id"),
             source=data.get("source", "manual"),
         )
 
-        events_url = str(data.get("events_url") or "").strip()
-        if not events_url:
+        if not str(data.get("events_url") or "").strip():
             update_org(org_id, issue_state="open", review_needed_reason="Missing events URL", active=True, crawl_paused=False)
         else:
             update_org(org_id, issue_state="none", review_needed_reason=None, active=True, crawl_paused=False)
@@ -258,35 +258,6 @@ def add_org():
     except Exception:
         app.logger.exception("Failed to add org via /api/orgs")
         return jsonify({"error": "Failed to add org"}), 500
-
-
-@app.route("/api/orgs/bulk", methods=["POST"])
-def bulk_add():
-    data = request.json
-    if not isinstance(data, list):
-        return jsonify({"error": "expected a JSON array"}), 400
-
-    ids = []
-    for item in data:
-        if not isinstance(item, dict) or not item.get("name"):
-            continue
-        org_id = upsert_org(
-            name=item["name"],
-            homepage=item.get("homepage"),
-            events_url=item.get("events_url"),
-            description=item.get("description"),
-            borough=item.get("borough"),
-            category=item.get("category"),
-            org_type=item.get("org_type") or item.get("type"),
-            primary_type=item.get("primary_type"),
-            parent_org_id=item.get("parent_org_id"),
-            source=item.get("source", "bulk_import"),
-        )
-        if not str(item.get("events_url") or "").strip():
-            update_org(org_id, issue_state="open", review_needed_reason="Missing events URL", active=True, crawl_paused=False)
-        ids.append(org_id)
-
-    return jsonify({"ok": True, "count": len(ids), "ids": ids})
 
 
 @app.route("/healthz")
@@ -303,7 +274,6 @@ def stats():
 
 @app.route("/export")
 def export():
-    """Export active orgs as JSON."""
     return jsonify(get_active_orgs())
 
 
@@ -313,7 +283,7 @@ def admin_state():
 
 
 @app.route("/api/admin/review/<int:org_id>", methods=["POST"])
-def review_org(org_id):
+def review_org(org_id: int):
     data = request.json or {}
 
     org = get_org(org_id)
@@ -321,47 +291,37 @@ def review_org(org_id):
         return jsonify({"error": "org not found"}), 404
 
     action = str(data.get("action") or "resolve").strip().lower()
-    if action not in ("resolve", "snooze", "open"):
+    if action not in {"resolve", "snooze", "open"}:
         return jsonify({"error": "invalid action"}), 400
 
     feedback = str(data.get("feedback") or "").strip()
-    events_url = data.get("events_url")
-    review_reason = data.get("review_needed_reason")
 
-    updates = {}
-
-    if isinstance(events_url, str):
-        updates["events_url"] = events_url.strip() or None
-
+    updates: dict[str, Any] = {}
+    if isinstance(data.get("events_url"), str):
+        updates["events_url"] = data.get("events_url").strip() or None
     if isinstance(data.get("name"), str):
         name_value = data.get("name").strip()
         if name_value:
             updates["name"] = name_value
-
     if isinstance(data.get("borough"), str):
         updates["borough"] = data.get("borough").strip() or None
 
     type_value = data.get("org_type")
-    if not isinstance(type_value, str):
-        type_value = data.get("category")
     if isinstance(type_value, str):
         updates["org_type"] = type_value.strip() or None
 
     if "crawl_paused" in data:
         updates["crawl_paused"] = bool(data.get("crawl_paused"))
-
     if "active" in data:
         updates["active"] = bool(data.get("active"))
-
     if "parent_org_id" in data:
         updates["parent_org_id"] = data.get("parent_org_id")
-
     if feedback:
         updates["notes"] = feedback
 
     reason_text = None
-    if isinstance(review_reason, str):
-        reason_text = review_reason.strip() or None
+    if isinstance(data.get("review_needed_reason"), str):
+        reason_text = data.get("review_needed_reason").strip() or None
 
     reject_intent = _feedback_implies_reject(feedback)
 
@@ -370,7 +330,6 @@ def review_org(org_id):
         updates["review_needed_reason"] = reason_text
         updates["consecutive_failures"] = 0
         updates["consecutive_empty_extracts"] = 0
-
         if reject_intent:
             updates["status"] = "rejected"
             updates["active"] = False
@@ -391,48 +350,12 @@ def review_org(org_id):
     if not str(effective_events_url or "").strip():
         if action == "open":
             updates["issue_state"] = "open"
-            if not updates.get("review_needed_reason"):
-                updates["review_needed_reason"] = "Missing events URL"
+            updates["review_needed_reason"] = updates.get("review_needed_reason") or "Missing events URL"
         elif action == "snooze":
-            if not updates.get("review_needed_reason"):
-                updates["review_needed_reason"] = "Missing events URL"
+            updates["review_needed_reason"] = updates.get("review_needed_reason") or "Missing events URL"
 
     update_org(org_id, **updates)
-
-    return jsonify(
-        {
-            "ok": True,
-            "org_id": org_id,
-            "action": action,
-            "state": _state_payload(),
-        }
-    )
-
-
-@app.route("/api/admin/strategies", methods=["GET", "POST"])
-def strategies():
-    if request.method == "GET":
-        return jsonify({"strategies": [_serialize_row(item) for item in get_strategies()]})
-
-    data = request.json or {}
-    text_value = str(data.get("text") or "").strip()
-    if not text_value:
-        return jsonify({"error": "text required"}), 400
-
-    strategy_id = add_strategy(text_value=text_value, active=True)
-    strategy_rows = get_strategies()
-    strategy_row = next((item for item in strategy_rows if int(item["id"]) == strategy_id), None)
-    return jsonify({"ok": True, "strategy": _serialize_row(strategy_row) if strategy_row else None})
-
-
-@app.route("/api/admin/strategies/<int:strategy_id>", methods=["PATCH"])
-def strategy_toggle(strategy_id):
-    data = request.json or {}
-    if "active" not in data:
-        return jsonify({"error": "active required"}), 400
-
-    set_strategy_active(strategy_id, bool(data["active"]))
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "org_id": org_id, "action": action, "state": _state_payload()})
 
 
 @app.route("/api/admin/discovery/run", methods=["POST"])
@@ -455,11 +378,8 @@ def run_discovery_now():
         max_candidates=_optional_int("max_candidates"),
         request_timeout=_optional_int("request_timeout"),
         dry_run=bool(data.get("dry_run", False)),
-        borough=str(data.get("borough") or "").strip() or None,
-        category=str(data.get("category") or "").strip() or None,
-        search_provider=str(data.get("search_provider") or "").strip() or None,
+        search_provider="openai_web",
     )
-
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
 
 
@@ -479,14 +399,6 @@ def cleanup_discovery_now():
         dry_run=bool(data.get("dry_run", False)),
         limit=_optional_int("limit", 1000),
     )
-    return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
-
-
-@app.route("/api/admin/categories/normalize", methods=["POST"])
-def normalize_categories_now():
-    data = request.json or {}
-    summary = normalize_org_taxonomy(dry_run=bool(data.get("dry_run", False)))
-    summary["legacy_alias"] = True
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
 
 
@@ -520,13 +432,12 @@ def import_csv():
         if len(raw) > 5 * 1024 * 1024:
             return jsonify({"error": "CSV file too large (max 5MB)"}), 400
 
-        apply_value = str(request.form.get("apply") or "").strip().lower()
-        apply_changes = apply_value in {"1", "true", "yes", "on"}
+        apply_changes = str(request.form.get("apply") or "").strip().lower() in {"1", "true", "yes", "on"}
         source = str(request.form.get("source") or "").strip() or "csv_admin_import"
-
         csv_text = raw.decode("utf-8-sig", errors="replace")
+
         result = run_csv_import(csv_text=csv_text, apply=apply_changes, source=source)
-        payload = {"ok": True, "result": result}
+        payload: dict[str, Any] = {"ok": True, "result": result}
         if apply_changes:
             payload["state"] = _state_payload()
         return jsonify(payload)
@@ -536,6 +447,10 @@ def import_csv():
         app.logger.exception("Failed CSV admin import")
         return jsonify({"error": "Failed to import CSV"}), 500
 
+
+# -----------------------------
+# Entrypoint
+# -----------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Org review admin panel")

@@ -78,7 +78,6 @@ let state = window.APP_INITIAL_STATE || {
   queue_total: 0,
   queue: [],
   active_orgs: [],
-  strategies: [],
   discovery_latest: null,
   discovery_runs: [],
 };
@@ -89,8 +88,7 @@ const ui = {
   notice: "",
   isBusy: false,
   queueDrafts: {},
-  strategyDraft: "",
-  activeFilterCategory: "",
+  activeFilterType: "",
   activeFilterBorough: "",
   manualDraft: {
     name: "",
@@ -107,20 +105,43 @@ const ui = {
   },
 };
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatDate(value) {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString();
+}
+
+function orgTypeLabel(value) {
+  const clean = String(value || "").trim();
+  if (!clean) return "Organisation";
+  return ORG_TYPE_LABELS[clean] || clean.replace(/_/g, " ");
+}
+
+function setNotice(message) {
+  ui.notice = String(message || "").trim();
+}
+
 function renderSelectOptions(values, selectedValue, emptyLabel = "Unspecified") {
   const selected = String(selectedValue || "").trim();
   const uniqueValues = [];
   const seen = new Set();
-
   for (const value of values || []) {
     const clean = String(value || "").trim();
     if (!clean || seen.has(clean)) continue;
     seen.add(clean);
     uniqueValues.push(clean);
   }
-  if (selected && !seen.has(selected)) {
-    uniqueValues.unshift(selected);
-  }
+  if (selected && !seen.has(selected)) uniqueValues.unshift(selected);
 
   return `
     <option value="">${escapeHtml(emptyLabel)}</option>
@@ -134,43 +155,13 @@ function renderBoroughOptions(selectedValue) {
   return renderSelectOptions(BOROUGH_OPTIONS, selectedValue, "Select borough");
 }
 
-function renderCategoryOptions(selectedValue) {
+function renderTypeOptions(selectedValue) {
   const selected = String(selectedValue || "").trim();
   const values = ORG_TYPES.slice();
-  if (selected && !values.includes(selected)) {
-    values.unshift(selected);
-  }
-  const options = values.map((value) => {
-    const label = ORG_TYPE_LABELS[value] || value;
-    return `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
-  }).join("");
-  return `<option value="">Select type</option>${options}`;
-}
-
-function orgTypeLabel(value) {
-  const clean = String(value || "").trim();
-  if (!clean) return "Organisation";
-  return ORG_TYPE_LABELS[clean] || clean.replace(/_/g, " ");
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function formatDate(value) {
-  if (!value) return "-";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString();
-}
-
-function setNotice(message) {
-  ui.notice = message;
+  if (selected && !values.includes(selected)) values.unshift(selected);
+  return `<option value="">Select type</option>${values
+    .map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(orgTypeLabel(value))}</option>`)
+    .join("")}`;
 }
 
 function syncCurrentQueue() {
@@ -179,9 +170,7 @@ function syncCurrentQueue() {
     ui.currentQueueId = null;
     return;
   }
-
-  const exists = queue.some((item) => item.id === ui.currentQueueId);
-  if (!exists) {
+  if (!queue.some((item) => item.id === ui.currentQueueId)) {
     ui.currentQueueId = queue[0].id;
   }
 }
@@ -208,8 +197,7 @@ async function apiRequest(url, options = {}) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = payload.error || `Request failed (${response.status})`;
-    throw new Error(message);
+    throw new Error(payload.error || `Request failed (${response.status})`);
   }
   return payload;
 }
@@ -229,7 +217,6 @@ async function refreshState() {
 async function saveQueueAction(action) {
   const current = (state.queue || []).find((item) => item.id === ui.currentQueueId);
   if (!current) return;
-
   const draft = ensureQueueDraft(current);
 
   ui.isBusy = true;
@@ -247,16 +234,33 @@ async function saveQueueAction(action) {
       }),
     });
 
-    state = payload.state;
+    state = payload.state || state;
     syncCurrentQueue();
+    if (action === "resolve") setNotice("Issue marked resolved.");
+    else if (action === "snooze") setNotice("Issue snoozed.");
+    else setNotice("Issue kept open.");
+  } catch (error) {
+    setNotice(error.message);
+  } finally {
+    ui.isBusy = false;
+    render();
+  }
+}
 
-    if (action === "resolve") {
-      setNotice("Issue marked resolved.");
-    } else if (action === "snooze") {
-      setNotice("Issue snoozed.");
-    } else {
-      setNotice("Issue kept open.");
-    }
+async function moveActiveOrgToQueue(orgId) {
+  if (!orgId) return;
+  const org = (state.active_orgs || []).find((item) => item.id === orgId) || null;
+
+  ui.isBusy = true;
+  render();
+  try {
+    const payload = await apiRequest(`/api/admin/review/${orgId}`, {
+      method: "POST",
+      body: JSON.stringify({ action: "open", review_needed_reason: "Manual review requested from Active Orgs" }),
+    });
+    state = payload.state || state;
+    syncCurrentQueue();
+    setNotice(`Moved "${org?.name || `Org #${orgId}`}" to Review Queue.`);
   } catch (error) {
     setNotice(error.message);
   } finally {
@@ -285,10 +289,7 @@ async function addManualOrg(form) {
   ui.isBusy = true;
   render();
   try {
-    await apiRequest("/api/orgs", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    await apiRequest("/api/orgs", { method: "POST", body: JSON.stringify(body) });
 
     ui.manualDraft = {
       name: "",
@@ -356,10 +357,7 @@ async function uploadBulkCsv(applyChanges) {
   try {
     const response = await fetch("/api/admin/import/csv", { method: "POST", body: formData });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = payload.error || `Request failed (${response.status})`;
-      throw new Error(message);
-    }
+    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
 
     const result = payload.result || null;
     ui.bulkImport.lastResult = result;
@@ -383,65 +381,17 @@ async function uploadBulkCsv(applyChanges) {
   }
 }
 
-async function saveStrategy() {
-  const text = ui.strategyDraft.trim();
-  if (!text) {
-    setNotice("Write your strategy note first.");
-    render();
-    return;
-  }
-
-  ui.isBusy = true;
-  render();
-  try {
-    await apiRequest("/api/admin/strategies", {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    });
-    ui.strategyDraft = "";
-    await refreshState();
-    setNotice("Strategy note saved.");
-  } catch (error) {
-    setNotice(error.message);
-  } finally {
-    ui.isBusy = false;
-    render();
-  }
-}
-
-async function toggleStrategy(strategyId, active) {
-  ui.isBusy = true;
-  render();
-  try {
-    await apiRequest(`/api/admin/strategies/${strategyId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ active }),
-    });
-    await refreshState();
-  } catch (error) {
-    setNotice(error.message);
-    ui.isBusy = false;
-    render();
-  }
-}
-
 async function runDiscoveryNow() {
   ui.isBusy = true;
   render();
   try {
-    const payload = await apiRequest("/api/admin/discovery/run", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-
+    const payload = await apiRequest("/api/admin/discovery/run", { method: "POST", body: JSON.stringify({}) });
     state = payload.state || state;
     const summary = payload.summary || {};
     if (summary.status === "skipped") {
       setNotice(summary.reason || "Discovery skipped.");
     } else {
-      const upsertedCount = Number(summary.upserted_count || 0);
-      const candidateCount = Number(summary.candidate_count || 0);
-      setNotice(`Discovery complete: ${upsertedCount} upserted from ${candidateCount} candidates.`);
+      setNotice(`Discovery complete: ${Number(summary.upserted_count || 0)} upserted from ${Number(summary.candidate_count || 0)} candidates.`);
     }
   } catch (error) {
     setNotice(error.message);
@@ -457,27 +407,11 @@ async function cleanupDiscoveryNow() {
   try {
     const payload = await apiRequest("/api/admin/discovery/cleanup", {
       method: "POST",
-      body: JSON.stringify({
-        days: 7,
-        dry_run: false,
-        limit: 1500,
-      }),
+      body: JSON.stringify({ days: 7, dry_run: false, limit: 1500 }),
     });
-
     state = payload.state || state;
     const summary = payload.summary || {};
-    const updated = Number(summary.updated || 0);
-    const flagged = Number(summary.flagged || 0);
-    const newlyInactivated = Number(summary.newly_inactivated || 0);
-    const sample = Array.isArray(summary.sample) ? summary.sample : [];
-    const sampleNames = sample
-      .map((item) => String(item?.name || "").trim())
-      .filter(Boolean)
-      .slice(0, 8);
-    const sampleLabel = sampleNames.length ? ` Flagged: ${sampleNames.join(", ")}.` : "";
-    setNotice(
-      `Cleanup complete: ${updated} updated (${flagged} flagged, ${newlyInactivated} newly inactivated).${sampleLabel}`
-    );
+    setNotice(`Cleanup complete: ${Number(summary.updated || 0)} updated (${Number(summary.flagged || 0)} flagged, ${Number(summary.newly_inactivated || 0)} newly inactivated).`);
   } catch (error) {
     setNotice(error.message);
   } finally {
@@ -486,38 +420,10 @@ async function cleanupDiscoveryNow() {
   }
 }
 
-async function moveActiveOrgToQueue(orgId) {
-  if (!orgId) return;
-  const org = (state.active_orgs || []).find((item) => item.id === orgId) || null;
-  const isAlreadyOpen = String(org?.issue_state || "") === "open";
-  const alreadyInQueue = (state.queue || []).some((item) => item.id === orgId);
-
-  if (isAlreadyOpen && alreadyInQueue) {
-    setNotice(`"${org?.name || `Org #${orgId}`}" is already in the Review Queue.`);
-    render();
-    return;
-  }
-
-  ui.isBusy = true;
-  render();
-  try {
-    const payload = await apiRequest(`/api/admin/review/${orgId}`, {
-      method: "POST",
-      body: JSON.stringify({
-        action: "open",
-        review_needed_reason: "Manual review requested from Active Orgs",
-      }),
-    });
-
-    state = payload.state || state;
-    syncCurrentQueue();
-    setNotice(`Moved "${org?.name || `Org #${orgId}`}" to Review Queue.`);
-  } catch (error) {
-    setNotice(error.message);
-  } finally {
-    ui.isBusy = false;
-    render();
-  }
+function runStatusMeta(status) {
+  if (status === "success") return { label: "Success", className: "approved" };
+  if (status === "failed") return { label: "Failed", className: "rejected" };
+  return { label: "Running", className: "pending" };
 }
 
 function renderQueue() {
@@ -539,7 +445,6 @@ function renderQueue() {
     .join("");
 
   let card = '<div class="empty-card">No orgs currently need manual review.</div>';
-
   if (current) {
     const draft = ensureQueueDraft(current);
     card = `
@@ -569,14 +474,10 @@ function renderQueue() {
         <input id="queue-name" data-action="queue-name-input" data-id="${current.id}" value="${escapeHtml(draft.name)}" placeholder="Organization name" />
 
         <label class="feedback-label" for="queue-borough">Borough</label>
-        <select id="queue-borough" data-action="queue-borough-input" data-id="${current.id}">
-          ${renderBoroughOptions(draft.borough)}
-        </select>
+        <select id="queue-borough" data-action="queue-borough-input" data-id="${current.id}">${renderBoroughOptions(draft.borough)}</select>
 
         <label class="feedback-label" for="queue-org-type">Type</label>
-        <select id="queue-org-type" data-action="queue-org-type-input" data-id="${current.id}">
-          ${renderCategoryOptions(draft.org_type)}
-        </select>
+        <select id="queue-org-type" data-action="queue-org-type-input" data-id="${current.id}">${renderTypeOptions(draft.org_type)}</select>
 
         <label class="feedback-label" for="queue-events-url">Events URL fix (optional)</label>
         <input id="queue-events-url" data-action="queue-events-url-input" data-id="${current.id}" value="${escapeHtml(draft.events_url)}" placeholder="https://.../events" />
@@ -597,13 +498,10 @@ function renderQueue() {
     <section class="panel">
       <header class="panel-head">
         <h2>Review Queue</h2>
-        <p>Traditional rolling queue. Only orgs with active crawl/event-source issues appear here.</p>
+        <p>Rolling queue for org records that need manual triage.</p>
       </header>
-
       <div class="queue-layout">
-        <div class="queue-list">
-          ${list || '<div class="empty-card">Queue is empty.</div>'}
-        </div>
+        <div class="queue-list">${list || '<div class="empty-card">Queue is empty.</div>'}</div>
         <div class="queue-card">${card}</div>
       </div>
     </section>
@@ -614,56 +512,42 @@ function renderActive() {
   const activeOrgs = state.active_orgs || [];
   const total = activeOrgs.length;
 
-  // Count orgs per type and borough
-  const byCat = {};
-  const byBor = {};
+  const byType = {};
+  const byBorough = {};
   for (const item of activeOrgs) {
-    const cat = item.org_type || "organisation";
-    const bor = item.borough || "unknown";
-    byCat[cat] = (byCat[cat] || 0) + 1;
-    byBor[bor] = (byBor[bor] || 0) + 1;
+    const type = item.org_type || "organisation";
+    const borough = item.borough || "unknown";
+    byType[type] = (byType[type] || 0) + 1;
+    byBorough[borough] = (byBorough[borough] || 0) + 1;
   }
 
-  const catOptions = Object.entries(byCat)
+  const typeOptions = Object.entries(byType)
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(
-      ([name, count]) =>
-        `<option value="${escapeHtml(name)}" ${ui.activeFilterCategory === name ? "selected" : ""}>${escapeHtml(orgTypeLabel(name))} (${count})</option>`
-    )
+    .map(([name, count]) => `<option value="${escapeHtml(name)}" ${ui.activeFilterType === name ? "selected" : ""}>${escapeHtml(orgTypeLabel(name))} (${count})</option>`)
     .join("");
 
-  const borOptions = Object.entries(byBor)
+  const boroughOptions = Object.entries(byBorough)
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([name, count]) => `<option value="${escapeHtml(name)}" ${ui.activeFilterBorough === name ? "selected" : ""}>${escapeHtml(name)} (${count})</option>`)
     .join("");
 
-  // Filter rows
   const filtered = activeOrgs.filter((item) => {
-    if (ui.activeFilterCategory && (item.org_type || "organisation") !== ui.activeFilterCategory) return false;
+    if (ui.activeFilterType && (item.org_type || "organisation") !== ui.activeFilterType) return false;
     if (ui.activeFilterBorough && (item.borough || "unknown") !== ui.activeFilterBorough) return false;
     return true;
   });
 
   const rows = filtered
-    .map(
-      (item) => {
-        const isOpenIssue = String(item.issue_state || "") === "open";
-        return `
+    .map((item) => `
       <tr>
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.borough || "-")}</td>
         <td>${escapeHtml(orgTypeLabel(item.org_type || "organisation"))}</td>
         <td>${item.events_url ? `<a href="${escapeHtml(item.events_url)}" target="_blank" rel="noreferrer">Link</a>` : "-"}</td>
         <td>${escapeHtml(formatDate(item.created_at))}</td>
-        <td>
-          <button class="ghost-btn mini-btn" data-action="queue-from-active" data-id="${item.id}" ${ui.isBusy ? "disabled" : ""} title="${isOpenIssue ? "Open in Queue" : "Move to Queue"}">
-            &#x2192;
-          </button>
-        </td>
+        <td><button class="ghost-btn mini-btn" data-action="queue-from-active" data-id="${item.id}" ${ui.isBusy ? "disabled" : ""}>&#x2192;</button></td>
       </tr>
-    `
-      }
-    )
+    `)
     .join("");
 
   return `
@@ -677,13 +561,13 @@ function renderActive() {
       </header>
 
       <div class="active-filters">
-        <select data-action="active-filter-category">
-          <option value="" ${!ui.activeFilterCategory ? "selected" : ""}>All types (${total})</option>
-          ${catOptions}
+        <select data-action="active-filter-type">
+          <option value="" ${!ui.activeFilterType ? "selected" : ""}>All types (${total})</option>
+          ${typeOptions}
         </select>
         <select data-action="active-filter-borough">
           <option value="" ${!ui.activeFilterBorough ? "selected" : ""}>All boroughs (${total})</option>
-          ${borOptions}
+          ${boroughOptions}
         </select>
       </div>
 
@@ -710,6 +594,7 @@ function renderActive() {
 
 function renderAdd() {
   const importSummary = renderImportSummary(ui.bulkImport.lastResult);
+
   return `
     <section class="panel">
       <header class="panel-head panel-head-row">
@@ -731,14 +616,10 @@ function renderAdd() {
           <input name="events_url" type="url" value="${escapeHtml(ui.manualDraft.events_url)}" placeholder="https://.../events" />
         </label>
         <label>Borough
-          <select name="borough" required>
-            ${renderBoroughOptions(ui.manualDraft.borough)}
-          </select>
+          <select name="borough" required>${renderBoroughOptions(ui.manualDraft.borough)}</select>
         </label>
         <label>Type
-          <select name="org_type">
-            ${renderCategoryOptions(ui.manualDraft.org_type)}
-          </select>
+          <select name="org_type">${renderTypeOptions(ui.manualDraft.org_type)}</select>
         </label>
         <label>Description
           <textarea name="description" placeholder="Why this source matters.">${escapeHtml(ui.manualDraft.description)}</textarea>
@@ -748,7 +629,7 @@ function renderAdd() {
 
       <section class="approved-list">
         <h3>Bulk Add (CSV)</h3>
-        <p class="sub">Uses guarded dedupe against existing DB. Risky rows are auto-opened in Review Queue.</p>
+        <p class="sub">Guarded dedupe against existing DB. Risky rows are auto-opened in Review Queue.</p>
         <label class="feedback-label" for="bulk-csv-input">CSV file</label>
         <input id="bulk-csv-input" type="file" accept=".csv,text/csv" data-action="bulk-csv-file" ${ui.isBusy ? "disabled" : ""} />
         <p class="sub">${ui.bulkImport.fileName ? `Selected: ${escapeHtml(ui.bulkImport.fileName)}` : "No file selected."}</p>
@@ -760,49 +641,6 @@ function renderAdd() {
       </section>
     </section>
   `;
-}
-
-function renderStrategies() {
-  const strategies = state.strategies || [];
-  const strategyItems = strategies
-    .map(
-      (item) => `
-      <div class="strategy-item">
-        <button class="toggle ${item.active ? "on" : "off"}" data-action="toggle-strategy" data-id="${item.id}" data-next="${item.active ? "false" : "true"}">
-          ${item.active ? "Active" : "Paused"}
-        </button>
-        <div>
-          <p>${escapeHtml(item.text)}</p>
-          <small>${escapeHtml(formatDate(item.created_at))}</small>
-        </div>
-      </div>
-    `
-    )
-    .join("");
-
-  return `
-    <section class="panel">
-      <header class="panel-head">
-        <h2>Search Strategy Log</h2>
-        <p>Freeform strategy notes that guide future org discovery.</p>
-      </header>
-
-      <label class="feedback-label" for="strategy-input">New strategy note</label>
-      <textarea id="strategy-input" data-action="strategy-input" placeholder="Example: prioritize non-commercial art spaces in East London.">${escapeHtml(ui.strategyDraft)}</textarea>
-      <button class="primary-btn" data-action="save-strategy" ${ui.isBusy ? "disabled" : ""}>Save strategy note</button>
-
-      <section class="strategy-list">
-        <h3>Saved strategy notes (${strategies.length})</h3>
-        ${strategyItems || '<p class="empty-small">No strategy notes yet.</p>'}
-      </section>
-    </section>
-  `;
-}
-
-function runStatusMeta(status) {
-  if (status === "success") return { label: "Success", className: "approved" };
-  if (status === "failed") return { label: "Failed", className: "rejected" };
-  return { label: "Running", className: "pending" };
 }
 
 function renderDiscovery() {
@@ -892,21 +730,14 @@ function renderDiscovery() {
 function render() {
   syncCurrentQueue();
 
-  const body =
-    ui.tab === "queue"
-      ? renderQueue()
-      : ui.tab === "active"
-        ? renderActive()
-        : ui.tab === "add"
-          ? renderAdd()
-          : ui.tab === "strategy"
-            ? renderStrategies()
-            : renderDiscovery();
+  let body = renderQueue();
+  if (ui.tab === "active") body = renderActive();
+  if (ui.tab === "add") body = renderAdd();
+  if (ui.tab === "discovery") body = renderDiscovery();
 
   const navTab = ui.tab === "add" ? "active" : ui.tab;
   const openIssues = state.stats?.open_issues || 0;
   const activeTotal = state.stats?.active_total || state.active_orgs?.length || 0;
-  const strategyTotal = (state.strategies || []).length;
   const discoveryTotal = (state.discovery_runs || []).length;
 
   app.innerHTML = `
@@ -916,7 +747,7 @@ function render() {
           <div>
             <p class="eyebrow">London Tasteful Events</p>
             <h1>Org Curation Console</h1>
-            <p class="sub">Rolling issue queue + flat active-org extract.</p>
+            <p class="sub">Lean queue + active list + import + discovery.</p>
           </div>
         </div>
 
@@ -929,12 +760,8 @@ function render() {
             <span>Active Orgs</span>
             <strong>${escapeHtml(activeTotal)}</strong>
           </button>
-          <button class="metric metric-nav ${navTab === "strategy" ? "active" : ""}" data-action="switch-tab" data-tab="strategy" ${ui.isBusy ? "disabled" : ""}>
-            <span>Strategies</span>
-            <strong>${escapeHtml(strategyTotal)}</strong>
-          </button>
           <button class="metric metric-nav ${navTab === "discovery" ? "active" : ""}" data-action="switch-tab" data-tab="discovery" ${ui.isBusy ? "disabled" : ""}>
-            <span>Discovery</span>
+            <span>Discovery Runs</span>
             <strong>${escapeHtml(discoveryTotal)}</strong>
           </button>
         </div>
@@ -951,66 +778,46 @@ app.addEventListener("click", async (event) => {
   if (!target) return;
 
   const action = target.dataset.action;
-
   if (action === "switch-tab") {
     ui.tab = target.dataset.tab;
     render();
     return;
   }
-
   if (action === "go-add-org") {
     ui.tab = "add";
     render();
     return;
   }
-
   if (action === "back-to-active") {
     ui.tab = "active";
     render();
     return;
   }
-
   if (action === "pick-queue") {
     ui.currentQueueId = Number(target.dataset.id);
     render();
     return;
   }
-
   if (action === "queue-save") {
     await saveQueueAction(target.dataset.mode || "resolve");
     return;
   }
-
-  if (action === "save-strategy") {
-    await saveStrategy();
-    return;
-  }
-
-  if (action === "toggle-strategy") {
-    await toggleStrategy(Number(target.dataset.id), target.dataset.next === "true");
-    return;
-  }
-
   if (action === "run-discovery") {
     await runDiscoveryNow();
     return;
   }
-
   if (action === "cleanup-discovery") {
     await cleanupDiscoveryNow();
     return;
   }
-
   if (action === "bulk-csv-dry-run") {
     await uploadBulkCsv(false);
     return;
   }
-
   if (action === "bulk-csv-apply") {
     await uploadBulkCsv(true);
     return;
   }
-
   if (action === "queue-from-active") {
     await moveActiveOrgToQueue(Number(target.dataset.id));
   }
@@ -1029,8 +836,8 @@ app.addEventListener("change", (event) => {
     return;
   }
 
-  if (target.dataset.action === "active-filter-category") {
-    ui.activeFilterCategory = target.value;
+  if (target.dataset.action === "active-filter-type") {
+    ui.activeFilterType = target.value;
     render();
     return;
   }
@@ -1038,7 +845,6 @@ app.addEventListener("change", (event) => {
   if (target.dataset.action === "active-filter-borough") {
     ui.activeFilterBorough = target.value;
     render();
-    return;
   }
 });
 
@@ -1088,11 +894,6 @@ app.addEventListener("input", (event) => {
     const draft = ui.queueDrafts[id] || { feedback: "", events_url: "", name: "", borough: "", org_type: "organisation" };
     draft.org_type = target.value;
     ui.queueDrafts[id] = draft;
-    return;
-  }
-
-  if (target.id === "strategy-input") {
-    ui.strategyDraft = target.value;
     return;
   }
 
