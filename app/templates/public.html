@@ -84,10 +84,18 @@
       .list li {
         border-top: 1px solid var(--line);
         padding: 9px 12px;
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
       }
 
       .list li:first-child {
         border-top: none;
+      }
+
+      .org-info {
+        flex: 1;
+        min-width: 0;
       }
 
       .org-name {
@@ -97,6 +105,22 @@
         margin: 0;
         overflow-wrap: break-word;
         word-break: break-word;
+      }
+
+      .flag-btn {
+        flex-shrink: 0;
+        border: none;
+        background: none;
+        padding: 2px 4px;
+        font-size: 18px;
+        cursor: pointer;
+        opacity: 0.45;
+        line-height: 1;
+      }
+
+      .flag-btn.flagged {
+        opacity: 1;
+        cursor: default;
       }
 
       .org-name a {
@@ -174,6 +198,8 @@
         org_type: "all",
         borough: "all",
       };
+
+      const flaggedIds = new Set();
 
       const els = {
         org_type: document.getElementById("type-filter"),
@@ -294,10 +320,14 @@
             const nameMarkup = eventsUrl
               ? `<a href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(name)}</a>`
               : escapeHtml(name);
+            const isFlagged = flaggedIds.has(org.id);
             return `
               <li>
-                <p class="org-name">${nameMarkup}</p>
-                <div class="org-meta">${escapeHtml(orgType)} • ${escapeHtml(borough)}</div>
+                <div class="org-info">
+                  <p class="org-name">${nameMarkup}</p>
+                  <div class="org-meta">${escapeHtml(orgType)} • ${escapeHtml(borough)}</div>
+                </div>
+                <button class="flag-btn${isFlagged ? " flagged" : ""}" data-org-id="${org.id}" title="${isFlagged ? "Flagged for review" : "Flag for review"}" type="button">${isFlagged ? "\u2639\uFE0F" : "\u2639\uFE0E"}</button>
               </li>
             `;
           })
@@ -325,6 +355,18 @@
           render();
         });
       }
+
+      document.addEventListener("click", (event) => {
+        const btn = event.target.closest(".flag-btn");
+        if (!btn) return;
+        const orgId = Number(btn.dataset.orgId);
+        if (!orgId || flaggedIds.has(orgId)) return;
+        flaggedIds.add(orgId);
+        btn.classList.add("flagged");
+        btn.textContent = "\u2639\uFE0F";
+        btn.title = "Flagged for review";
+        fetch(`/api/flag/${orgId}`, { method: "POST" }).catch(() => {});
+      });
 
       wireEvents();
       render();
