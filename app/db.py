@@ -916,29 +916,39 @@ def finish_discovery_run(
     details_json = json.dumps(details, ensure_ascii=False) if details is not None else None
     error_value = (error or "").strip()[:4000] or None
 
+    params: dict[str, Any] = {
+        "run_id": int(run_id),
+        "status": status_value,
+        "result_count": int(result_count),
+        "upserted_count": int(upserted_count),
+        "error": error_value,
+    }
+
+    if details_json is not None:
+        params["details_json"] = details_json
+        sql = """
+            UPDATE discovery_runs
+            SET status = :status,
+                result_count = :result_count,
+                upserted_count = :upserted_count,
+                error = :error,
+                details_json = :details_json,
+                finished_at = CURRENT_TIMESTAMP
+            WHERE id = :run_id
+        """
+    else:
+        sql = """
+            UPDATE discovery_runs
+            SET status = :status,
+                result_count = :result_count,
+                upserted_count = :upserted_count,
+                error = :error,
+                finished_at = CURRENT_TIMESTAMP
+            WHERE id = :run_id
+        """
+
     with get_db() as conn:
-        conn.execute(
-            text(
-                """
-                UPDATE discovery_runs
-                SET status = :status,
-                    result_count = :result_count,
-                    upserted_count = :upserted_count,
-                    error = :error,
-                    details_json = CASE WHEN :details_json IS NULL THEN details_json ELSE :details_json END,
-                    finished_at = CURRENT_TIMESTAMP
-                WHERE id = :run_id
-                """
-            ),
-            {
-                "run_id": int(run_id),
-                "status": status_value,
-                "result_count": int(result_count),
-                "upserted_count": int(upserted_count),
-                "error": error_value,
-                "details_json": details_json,
-            },
-        )
+        conn.execute(text(sql), params)
 
 
 def _decode_discovery_row(row: dict[str, Any]) -> dict[str, Any]:

@@ -20,6 +20,12 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  overflow-x: hidden;
+}
+
+html {
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 body {
@@ -55,6 +61,7 @@ h4 {
 
 .top-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
 }
@@ -81,7 +88,7 @@ h4 {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 12px;
 }
@@ -109,8 +116,8 @@ h4 {
   position: sticky;
   top: 0;
   z-index: 10;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 12px 0;
   padding: 8px;
@@ -120,6 +127,8 @@ h4 {
 }
 
 .tab {
+  flex: 1 1 auto;
+  min-width: 0;
   border: 1px solid var(--line);
   background: #fffaf0;
   color: var(--ink);
@@ -127,6 +136,7 @@ h4 {
   padding: 10px 8px;
   font-size: 0.84rem;
   font-weight: 600;
+  text-align: center;
 }
 
 .tab.active {
@@ -179,7 +189,7 @@ h4 {
 
 .batch-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -220,6 +230,7 @@ h4 {
 
 .candidate-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
 }
@@ -341,6 +352,7 @@ textarea:focus {
 
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 10px;
 }
@@ -452,6 +464,7 @@ textarea:focus {
   padding: 10px;
   margin-bottom: 8px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -525,8 +538,8 @@ textarea:focus {
     padding: 20px;
   }
 
-  .tab-nav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+  .metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .batch-strip {
@@ -568,6 +581,7 @@ textarea:focus {
 
 .queue-item-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
   align-items: center;
