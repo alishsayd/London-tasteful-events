@@ -27,6 +27,7 @@ from app.db import (
     upsert_org,
 )
 from app.discover import run_discovery_cycle
+from app.import_org_csv import run_csv_import
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -504,6 +505,36 @@ def discovery_runs():
             "runs": [_serialize_row(item) for item in get_discovery_runs(limit=20)],
         }
     )
+
+
+@app.route("/api/admin/import/csv", methods=["POST"])
+def import_csv():
+    upload = request.files.get("file")
+    if not upload or not str(upload.filename or "").strip():
+        return jsonify({"error": "CSV file is required"}), 400
+
+    try:
+        raw = upload.read() or b""
+        if not raw:
+            return jsonify({"error": "Uploaded file is empty"}), 400
+        if len(raw) > 5 * 1024 * 1024:
+            return jsonify({"error": "CSV file too large (max 5MB)"}), 400
+
+        apply_value = str(request.form.get("apply") or "").strip().lower()
+        apply_changes = apply_value in {"1", "true", "yes", "on"}
+        source = str(request.form.get("source") or "").strip() or "csv_admin_import"
+
+        csv_text = raw.decode("utf-8-sig", errors="replace")
+        result = run_csv_import(csv_text=csv_text, apply=apply_changes, source=source)
+        payload = {"ok": True, "result": result}
+        if apply_changes:
+            payload["state"] = _state_payload()
+        return jsonify(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        app.logger.exception("Failed CSV admin import")
+        return jsonify({"error": "Failed to import CSV"}), 500
 
 
 def main():

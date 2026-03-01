@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import re
 from collections import Counter, defaultdict
@@ -357,35 +358,43 @@ def _review_reasons(row: CsvRow) -> list[str]:
 
 
 def _read_csv_rows(path: str) -> list[CsvRow]:
-    out: list[CsvRow] = []
-    required = {"name", "events_url", "homepage", "borough", "org_type", "description"}
-
     with open(path, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        fieldnames = {str(item or "").strip() for item in (reader.fieldnames or [])}
-        missing_cols = sorted(required - fieldnames)
-        if missing_cols:
-            raise ValueError(f"Missing required CSV columns: {', '.join(missing_cols)}")
+        return _read_csv_rows_from_reader(reader)
 
-        for row_num, raw in enumerate(reader, start=2):
-            normalized_name, name_changed = _normalize_import_name(raw.get("name"))
-            org_type_raw = _clean_text(raw.get("org_type"))
-            borough_raw = _clean_text(raw.get("borough"))
 
-            out.append(
-                CsvRow(
-                    row_num=row_num,
-                    name=normalized_name,
-                    events_url=_canonical_url(raw.get("events_url")),
-                    homepage=_canonical_url(raw.get("homepage")),
-                    borough=_normalize_borough(raw.get("borough")),
-                    org_type=_normalize_org_type(raw.get("org_type")),
-                    description=_clean_text(raw.get("description")),
-                    original_org_type=org_type_raw,
-                    original_borough=borough_raw,
-                    name_was_normalized=name_changed,
-                )
+def _read_csv_rows_from_text(csv_text: str) -> list[CsvRow]:
+    reader = csv.DictReader(io.StringIO(csv_text))
+    return _read_csv_rows_from_reader(reader)
+
+
+def _read_csv_rows_from_reader(reader: csv.DictReader) -> list[CsvRow]:
+    out: list[CsvRow] = []
+    required = {"name", "events_url", "homepage", "borough", "org_type", "description"}
+    fieldnames = {str(item or "").strip() for item in (reader.fieldnames or [])}
+    missing_cols = sorted(required - fieldnames)
+    if missing_cols:
+        raise ValueError(f"Missing required CSV columns: {', '.join(missing_cols)}")
+
+    for row_num, raw in enumerate(reader, start=2):
+        normalized_name, name_changed = _normalize_import_name(raw.get("name"))
+        org_type_raw = _clean_text(raw.get("org_type"))
+        borough_raw = _clean_text(raw.get("borough"))
+
+        out.append(
+            CsvRow(
+                row_num=row_num,
+                name=normalized_name,
+                events_url=_canonical_url(raw.get("events_url")),
+                homepage=_canonical_url(raw.get("homepage")),
+                borough=_normalize_borough(raw.get("borough")),
+                org_type=_normalize_org_type(raw.get("org_type")),
+                description=_clean_text(raw.get("description")),
+                original_org_type=org_type_raw,
+                original_borough=borough_raw,
+                name_was_normalized=name_changed,
             )
+        )
 
     return out
 
@@ -537,6 +546,37 @@ def apply_import_plan(
     }
 
 
+def run_csv_import(
+    *,
+    csv_path: str | None = None,
+    csv_text: str | None = None,
+    apply: bool = False,
+    source: str = "csv_curated_import",
+) -> dict[str, Any]:
+    if not csv_path and csv_text is None:
+        raise ValueError("csv_path or csv_text is required")
+    if csv_path and csv_text is not None:
+        raise ValueError("provide either csv_path or csv_text, not both")
+
+    init_db()
+    rows = _read_csv_rows(csv_path) if csv_path else _read_csv_rows_from_text(csv_text or "")
+    existing = _load_existing()
+    indexes = _build_existing_indexes(existing)
+    plan = build_import_plan(rows, indexes)
+
+    output: dict[str, Any] = {
+        "mode": "apply" if apply else "dry_run",
+        "csv_path": csv_path,
+        "existing_org_count": len(existing),
+        "summary": plan["summary"],
+        "samples": plan["samples"],
+    }
+
+    if apply:
+        output["apply"] = apply_import_plan(plan, source=_clean_text(source) or "csv_curated_import", existing_indexes=indexes)
+    return output
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Guarded CSV importer for London event entities")
     parser.add_argument("--csv", required=True, help="Path to CSV file")
@@ -544,23 +584,7 @@ def main() -> None:
     parser.add_argument("--source", default="csv_curated_import", help="Source label for inserted rows")
     args = parser.parse_args()
 
-    init_db()
-    rows = _read_csv_rows(args.csv)
-    existing = _load_existing()
-    indexes = _build_existing_indexes(existing)
-    plan = build_import_plan(rows, indexes)
-
-    output: dict[str, Any] = {
-        "mode": "apply" if args.apply else "dry_run",
-        "csv_path": args.csv,
-        "existing_org_count": len(existing),
-        "summary": plan["summary"],
-        "samples": plan["samples"],
-    }
-
-    if args.apply:
-        output["apply"] = apply_import_plan(plan, source=_clean_text(args.source) or "csv_curated_import", existing_indexes=indexes)
-
+    output = run_csv_import(csv_path=args.csv, apply=args.apply, source=args.source)
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 

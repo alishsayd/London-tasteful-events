@@ -100,6 +100,11 @@ const ui = {
     org_type: "gallery",
     description: "",
   },
+  bulkImport: {
+    file: null,
+    fileName: "",
+    lastResult: null,
+  },
 };
 
 function renderSelectOptions(values, selectedValue, emptyLabel = "Unspecified") {
@@ -296,6 +301,80 @@ async function addManualOrg(form) {
 
     await refreshState();
     setNotice(`Added "${body.name}".`);
+  } catch (error) {
+    setNotice(error.message);
+  } finally {
+    ui.isBusy = false;
+    render();
+  }
+}
+
+function renderImportSummary(result) {
+  if (!result) return "";
+  const summary = result.summary || {};
+  const apply = result.apply || null;
+  const reasonCounts = summary.review_reason_counts || {};
+  const reasonRows = Object.entries(reasonCounts)
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([reason, count]) => `<li>${escapeHtml(reason)}: ${escapeHtml(count)}</li>`)
+    .join("");
+
+  return `
+    <section class="strategy-summary">
+      <h3>${escapeHtml(result.mode === "apply" ? "Bulk Import Applied" : "Bulk Import Preview")}</h3>
+      <p>Total rows: <strong>${escapeHtml(summary.total_rows ?? 0)}</strong></p>
+      <p>Planned rows: <strong>${escapeHtml(summary.planned_rows ?? 0)}</strong> (safe ${escapeHtml(summary.safe_rows ?? 0)}, review ${escapeHtml(summary.review_rows ?? 0)})</p>
+      <p>Deduped against existing DB: <strong>${escapeHtml(summary.existing_db_matches ?? 0)}</strong></p>
+      ${
+        apply
+          ? `<p>Inserted new: <strong>${escapeHtml(apply.inserted_new ?? 0)}</strong>, merged existing: <strong>${escapeHtml(apply.merged_existing ?? 0)}</strong>, queued for review: <strong>${escapeHtml(apply.review_opened ?? 0)}</strong></p>
+             <p>Apply errors: <strong>${escapeHtml(apply.error_count ?? 0)}</strong></p>`
+          : ""
+      }
+      <div class="inference">
+        <h4>Review reasons</h4>
+        <ul>${reasonRows || "<li>None</li>"}</ul>
+      </div>
+    </section>
+  `;
+}
+
+async function uploadBulkCsv(applyChanges) {
+  if (!ui.bulkImport.file) {
+    setNotice("Choose a CSV file first.");
+    render();
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", ui.bulkImport.file, ui.bulkImport.file.name || "orgs.csv");
+  formData.append("apply", applyChanges ? "true" : "false");
+  formData.append("source", "csv_admin_import");
+
+  ui.isBusy = true;
+  render();
+  try {
+    const response = await fetch("/api/admin/import/csv", { method: "POST", body: formData });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload.error || `Request failed (${response.status})`;
+      throw new Error(message);
+    }
+
+    const result = payload.result || null;
+    ui.bulkImport.lastResult = result;
+
+    if (applyChanges) {
+      state = payload.state || state;
+      syncCurrentQueue();
+      const inserted = Number(result?.apply?.inserted_new || 0);
+      const queued = Number(result?.apply?.review_opened || 0);
+      setNotice(`Bulk import complete: ${inserted} inserted, ${queued} moved to review queue.`);
+    } else {
+      const planned = Number(result?.summary?.planned_rows || 0);
+      const deduped = Number(result?.summary?.existing_db_matches || 0);
+      setNotice(`Bulk preview ready: ${planned} rows planned, ${deduped} deduped against existing DB.`);
+    }
   } catch (error) {
     setNotice(error.message);
   } finally {
@@ -630,6 +709,7 @@ function renderActive() {
 }
 
 function renderAdd() {
+  const importSummary = renderImportSummary(ui.bulkImport.lastResult);
   return `
     <section class="panel">
       <header class="panel-head panel-head-row">
@@ -665,6 +745,19 @@ function renderAdd() {
         </label>
         <button class="primary-btn" type="submit" ${ui.isBusy ? "disabled" : ""}>Add org</button>
       </form>
+
+      <section class="approved-list">
+        <h3>Bulk Add (CSV)</h3>
+        <p class="sub">Uses guarded dedupe against existing DB. Risky rows are auto-opened in Review Queue.</p>
+        <label class="feedback-label" for="bulk-csv-input">CSV file</label>
+        <input id="bulk-csv-input" type="file" accept=".csv,text/csv" data-action="bulk-csv-file" ${ui.isBusy ? "disabled" : ""} />
+        <p class="sub">${ui.bulkImport.fileName ? `Selected: ${escapeHtml(ui.bulkImport.fileName)}` : "No file selected."}</p>
+        <div class="card-actions">
+          <button class="ghost-btn" type="button" data-action="bulk-csv-dry-run" ${ui.isBusy ? "disabled" : ""}>Preview import</button>
+          <button class="primary-btn" type="button" data-action="bulk-csv-apply" ${ui.isBusy ? "disabled" : ""}>Import CSV</button>
+        </div>
+        ${importSummary}
+      </section>
     </section>
   `;
 }
@@ -908,6 +1001,16 @@ app.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "bulk-csv-dry-run") {
+    await uploadBulkCsv(false);
+    return;
+  }
+
+  if (action === "bulk-csv-apply") {
+    await uploadBulkCsv(true);
+    return;
+  }
+
   if (action === "queue-from-active") {
     await moveActiveOrgToQueue(Number(target.dataset.id));
   }
@@ -916,6 +1019,15 @@ app.addEventListener("click", async (event) => {
 app.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
+
+  if (target.dataset.action === "bulk-csv-file" && target instanceof HTMLInputElement) {
+    const file = target.files && target.files.length ? target.files[0] : null;
+    ui.bulkImport.file = file;
+    ui.bulkImport.fileName = file ? file.name : "";
+    ui.bulkImport.lastResult = null;
+    render();
+    return;
+  }
 
   if (target.dataset.action === "active-filter-category") {
     ui.activeFilterCategory = target.value;
