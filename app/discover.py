@@ -2236,7 +2236,7 @@ def run_discovery_cycle(
 
     init_db()
 
-    max_queries = max_queries or _env_int("DISCOVERY_MAX_QUERIES", 72)
+    max_queries = max_queries or _env_int("DISCOVERY_MAX_QUERIES", 120)
     max_queries = max(10, min(120, max_queries))
 
     max_results_per_query = max_results_per_query or _env_int("DISCOVERY_MAX_RESULTS_PER_QUERY", 8)
@@ -2699,7 +2699,7 @@ def main():
     boroughs = [args.borough] if args.borough else None
     categories = [args.category] if args.category else None
 
-    queries, _ = _build_discovery_queries(max_queries=args.max_queries or _env_int("DISCOVERY_MAX_QUERIES", 72), boroughs=boroughs, categories=categories)
+    queries, _ = _build_discovery_queries(max_queries=args.max_queries or _env_int("DISCOVERY_MAX_QUERIES", 120), boroughs=boroughs, categories=categories)
 
     if args.print_queries:
         print_queries(queries)
