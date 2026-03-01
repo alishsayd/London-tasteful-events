@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
@@ -50,7 +51,7 @@ USER_AGENT = (
 )
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
-CACHE_VERSION = "v5"
+CACHE_VERSION = "v6"
 QUERY_CACHE_TTL_DAYS = 30
 SERP_CACHE_TTL_DAYS = 30
 BUNDLE_CACHE_TTL_DAYS = 90
@@ -823,9 +824,89 @@ def _search_duckduckgo(query: str, max_results: int, timeout: int) -> list[str]:
     return urls[:max_results]
 
 
+def _extract_urls_from_openai_response(payload: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def _push(url: str | None) -> None:
+        canonical = _canonicalize_url(url)
+        if not canonical:
+            return
+        if _is_search_ignored_url(canonical):
+            return
+        if canonical in seen:
+            return
+        seen.add(canonical)
+        urls.append(canonical)
+
+    parsed = _parse_json_payload(_extract_output_text_from_response(payload))
+    if isinstance(parsed, dict):
+        raw_urls = parsed.get("urls")
+        if isinstance(raw_urls, list):
+            for item in raw_urls:
+                _push(str(item) if isinstance(item, str) else None)
+
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+
+            for annotation in content.get("annotations") or []:
+                if not isinstance(annotation, dict):
+                    continue
+                _push(annotation.get("url"))
+                _push(annotation.get("target_url"))
+                _push(annotation.get("source_url"))
+                webpage = annotation.get("webpage")
+                if isinstance(webpage, dict):
+                    _push(webpage.get("url"))
+
+            text_value = str(content.get("text") or "")
+            for match in re.findall(r"https?://[^\s<>\"]+", text_value):
+                _push(match.rstrip(".,);]"))
+
+    return urls
+
+
+def _search_openai_web(query: str, max_results: int, timeout: int) -> tuple[list[str], int]:
+    api_key = _clean_text(os.getenv("OPENAI_API_KEY"))
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    model = _clean_text(os.getenv("DISCOVERY_OPENAI_WEB_MODEL") or os.getenv("DISCOVERY_OPENAI_MODEL") or "gpt-5-mini")
+    prompt = (
+        "Find official pages for this query in London. "
+        "Return strict JSON only: {\"urls\": [\"https://...\"]}. "
+        "Prefer official org/event pages and avoid aggregators/marketplaces. "
+        f"Limit to {max_results} unique URLs.\n"
+        f"Query: {query}"
+    )
+    payload = {
+        "model": model,
+        "tools": [{"type": "web_search_preview"}],
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+        "max_output_tokens": max(220, min(1200, 140 * max_results)),
+    }
+    response = requests.post(
+        OPENAI_RESPONSES_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=max(20, timeout + 10),
+    )
+    response.raise_for_status()
+    response_payload: dict[str, Any] = response.json()
+    urls = _extract_urls_from_openai_response(response_payload)
+    tokens = _extract_usage_tokens(response_payload)
+    return urls[:max_results], tokens
+
+
 def _search_web(query: str, max_results: int, timeout: int, provider: str) -> list[str]:
-    # Search intentionally remains cheap/non-LLM. Legacy provider values are normalized.
-    _ = provider
+    normalized_provider = _normalize_token(provider).replace(" ", "_")
+    if normalized_provider == "openai_web":
+        urls, _ = _search_openai_web(query=query, max_results=max_results, timeout=timeout)
+        return urls
     return _search_duckduckgo(query=query, max_results=max_results, timeout=timeout)
 
 
@@ -845,8 +926,45 @@ def _cached_serp_search(
         return urls[:max_results]
 
     metrics["serp_cache_misses"] = metrics.get("serp_cache_misses", 0) + 1
-    urls = _search_web(query=query, max_results=max_results, timeout=timeout, provider=provider)
-    set_cached_value(key, {"query": query, "urls": urls}, ttl_days=SERP_CACHE_TTL_DAYS)
+    normalized_provider = _normalize_token(provider).replace(" ", "_")
+    max_attempts = max(1, _env_int("DISCOVERY_SEARCH_MAX_ATTEMPTS", 3))
+    urls: list[str] = []
+    last_exc: Exception | None = None
+
+    for attempt in range(max_attempts):
+        try:
+            if normalized_provider == "openai_web":
+                urls, tokens = _search_openai_web(query=query, max_results=max_results, timeout=timeout)
+                metrics["llm_calls"] = metrics.get("llm_calls", 0) + 1
+                metrics["llm_tokens"] = metrics.get("llm_tokens", 0) + int(tokens or 0)
+            else:
+                urls = _search_web(query=query, max_results=max_results, timeout=timeout, provider=provider)
+            last_exc = None
+            break
+        except Exception as exc:  # retry transient search failures before bubbling up
+            last_exc = exc
+            status_code = None
+            if isinstance(exc, requests.HTTPError) and getattr(exc, "response", None) is not None:
+                status_code = int(exc.response.status_code)
+            retryable = isinstance(exc, (requests.Timeout, requests.ConnectionError)) or status_code in {
+                408,
+                425,
+                429,
+                500,
+                502,
+                503,
+                504,
+            }
+            if not retryable or attempt >= max_attempts - 1:
+                break
+            metrics["search_retries"] = metrics.get("search_retries", 0) + 1
+            time.sleep(min(3.0, 0.6 * (2 ** attempt)))
+
+    if last_exc is not None:
+        raise last_exc
+
+    if urls:
+        set_cached_value(key, {"query": query, "urls": urls}, ttl_days=SERP_CACHE_TTL_DAYS)
     return urls[:max_results]
 
 
@@ -2748,6 +2866,7 @@ def run_discovery_cycle(
 
     query_errors = 0
     query_debug: list[dict[str, Any]] = []
+    query_error_debug: list[dict[str, Any]] = []
     metrics: dict[str, int] = {
         "llm_calls": int(query_meta.get("llm_calls") or 0),
         "llm_tokens": int(query_meta.get("llm_tokens") or 0),
@@ -2772,8 +2891,16 @@ def run_discovery_cycle(
                     provider=search_provider,
                     metrics=metrics,
                 )
-            except Exception:
+            except Exception as exc:
                 query_errors += 1
+                if len(query_error_debug) < 24:
+                    query_error_debug.append(
+                        {
+                            "query": query,
+                            "error_type": type(exc).__name__,
+                            "error": _clean_text(str(exc))[:220],
+                        }
+                    )
                 continue
 
             accepted_count = 0
@@ -3073,7 +3200,7 @@ def run_discovery_cycle(
             "query_generation_cache_hit": bool(query_meta.get("cache_hit")),
             "strategy_count": int(query_meta.get("strategy_count") or 0),
             "dry_run": dry_run,
-            "search_provider": "duckduckgo",
+            "search_provider": search_provider,
             "max_urls_per_domain": max_urls_per_domain,
             "auto_cleanup_enabled": bool(_env_bool("DISCOVERY_AUTO_CLEANUP", True) and not dry_run),
             "auto_cleanup_scanned": int((cleanup_summary or {}).get("scanned") or 0),
@@ -3083,12 +3210,14 @@ def run_discovery_cycle(
             "cache_metrics": {
                 "serp_cache_hits": metrics.get("serp_cache_hits", 0),
                 "serp_cache_misses": metrics.get("serp_cache_misses", 0),
+                "search_retries": metrics.get("search_retries", 0),
                 "bundle_cache_hits": metrics.get("bundle_cache_hits", 0),
                 "bundle_cache_misses": metrics.get("bundle_cache_misses", 0),
                 "lead_extract_cache_hits": metrics.get("lead_extract_cache_hits", 0),
                 "lead_extract_cache_misses": metrics.get("lead_extract_cache_misses", 0),
             },
             "query_debug": query_debug,
+            "query_error_debug": query_error_debug,
         }
 
         finish_discovery_run(
