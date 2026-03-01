@@ -481,8 +481,44 @@ function renderQueue() {
   `;
 }
 
+function renderCounts(items) {
+  const total = items.length;
+  const byCat = {};
+  const byBor = {};
+  for (const item of items) {
+    const cat = item.category || "other";
+    const bor = item.borough || "unknown";
+    byCat[cat] = (byCat[cat] || 0) + 1;
+    byBor[bor] = (byBor[bor] || 0) + 1;
+  }
+
+  const sortedCats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  const sortedBors = Object.entries(byBor).sort((a, b) => b[1] - a[1]);
+
+  const catTags = sortedCats
+    .map(([name, count]) => `<span class="count-tag">${escapeHtml(name)} <strong>${count}</strong></span>`)
+    .join("");
+  const borTags = sortedBors
+    .map(([name, count]) => `<span class="count-tag">${escapeHtml(name)} <strong>${count}</strong></span>`)
+    .join("");
+
+  return `
+    <div class="counts-section">
+      <div class="counts-group">
+        <span class="counts-label">All categories (${total}):</span>
+        <div class="count-tags">${catTags}</div>
+      </div>
+      <div class="counts-group">
+        <span class="counts-label">All boroughs (${total}):</span>
+        <div class="count-tags">${borTags}</div>
+      </div>
+    </div>
+  `;
+}
+
 function renderActive() {
-  const rows = (state.active_orgs || [])
+  const activeOrgs = state.active_orgs || [];
+  const rows = activeOrgs
     .map(
       (item) => {
         const isOpenIssue = String(item.issue_state || "") === "open";
@@ -513,6 +549,8 @@ function renderActive() {
         </div>
         <button class="primary-btn" data-action="go-add-org" ${ui.isBusy ? "disabled" : ""}>Add org</button>
       </header>
+
+      ${renderCounts(activeOrgs)}
 
       <div class="table-wrap">
         <table class="flat-table">

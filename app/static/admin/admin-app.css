@@ -599,6 +599,49 @@ textarea:focus {
   min-width: 0;
 }
 
+.counts-section {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.counts-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.counts-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.count-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.count-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 0.73rem;
+  color: var(--ink-muted);
+  background: #fff;
+}
+
+.count-tag strong {
+  color: var(--ink);
+  font-size: 0.73rem;
+}
+
 .table-wrap {
   margin-top: 12px;
   overflow: auto;
@@ -610,7 +653,7 @@ textarea:focus {
 .flat-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 920px;
+  min-width: 540px;
 }
 
 .flat-table th,
