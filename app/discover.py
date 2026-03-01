@@ -1,14 +1,16 @@
 """Automatic organisation discovery.
 
 This module can:
-1. Generate discovery queries.
-2. Search the web for candidate organisation sites.
-3. Extract org metadata (name, homepage, events URL, description, borough, category).
-4. Upsert candidates into the org database.
+1. Generate discovery queries for a wide and diverse London net.
+2. Retrieve candidate pages from cheap search (DuckDuckGo).
+3. Treat listicles/aggregators/marketplaces as lead sources only.
+4. Extract and resolve entity candidates to official domains.
+5. Classify domains into recurring places vs large one-off events.
+6. Upsert valid entities into the org database.
 
 Usage:
     python -m app.discover --run-once
-    python -m app.discover --run-once --max-queries 12 --max-candidates 40
+    python -m app.discover --run-once --max-queries 80 --max-candidates 300
     python -m app.discover --from-file results.json
     python -m app.discover --print-queries
 """
@@ -16,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,10 +33,12 @@ from bs4 import BeautifulSoup
 from app.db import (
     add_strategy,
     finish_discovery_run,
+    get_cached_value,
     get_latest_running_discovery_run,
     get_stats,
     get_strategies,
     init_db,
+    set_cached_value,
     start_discovery_run,
     upsert_org,
 )
@@ -44,7 +49,13 @@ USER_AGENT = (
 )
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
-# London boroughs — focus on dense cultural areas but keep full city coverage
+CACHE_VERSION = "v3"
+QUERY_CACHE_TTL_DAYS = 30
+SERP_CACHE_TTL_DAYS = 30
+BUNDLE_CACHE_TTL_DAYS = 90
+LLM_CLASSIFY_CACHE_TTL_DAYS = 180
+LEAD_EXTRACT_CACHE_TTL_DAYS = 180
+
 BOROUGHS = [
     "Hackney",
     "Tower Hamlets",
@@ -81,182 +92,129 @@ BOROUGHS = [
     "Bexley",
 ]
 
-CATEGORIES = [
-    "independent gallery",
-    "community cinema",
-    "theatre",
-    "live music venue",
-    "bookshop events",
-    "cultural centre",
-    "museum",
-    "arts charity",
-    "community space",
-    "poetry readings",
-    "lecture series",
-    "workshop space",
-    "independent arts venue",
+# Regions provide diversity without exploding query volume.
+REGION_HINTS = [
+    "Central London",
+    "East London",
+    "South London",
+    "North London",
+    "West London",
+    "Southbank",
+    "Greenwich",
+    "Camden",
+    "Hackney",
+    "Shoreditch",
+    "King's Cross",
+    "Canary Wharf",
 ]
 
-COUNTRY_FOCUS_TERMS = [
-    "japanese",
-    "korean",
-    "indian",
-    "hungarian",
-    "irish",
-    "mexican",
-    "russian",
-    "polish",
-    "turkish",
-    "arab",
-    "chinese",
-    "french",
-    "german",
-    "italian",
-    "spanish",
-    "portuguese",
-    "greek",
-    "ukrainian",
-    "african",
-    "latin american",
+QUERY_FAMILIES = [
+    "independent art centres",
+    "contemporary art galleries",
+    "photography galleries",
+    "architecture centres",
+    "architecture talk venues",
+    "design museums",
+    "historic houses with cultural programmes",
+    "public lecture theatres",
+    "science museums with talks",
+    "science public lecture venues",
+    "literary salons",
+    "book events venues",
+    "writer houses",
+    "poetry reading venues",
+    "chamber music venues",
+    "classical music venues",
+    "contemporary dance venues",
+    "experimental theatre venues",
+    "cinematheques",
+    "film institutes",
+    "repertory cinemas",
+    "independent cinemas",
+    "community cinema venues",
+    "craft workshops with classes",
+    "ceramics studios with classes",
+    "printmaking studios",
+    "woodworking workshops",
+    "textile craft workshops",
+    "metalworking workshops",
+    "cultural institutes",
+    "country cultural centres",
+    "diaspora arts centres",
+    "community arts venues",
+    "creative learning centres",
+    "museum late openings venues",
+    "galleries with talks programmes",
+    "gardens with evening events",
+    "conservatories with events",
+    "wine tasting venues",
+    "food culture institutes",
+    "heritage centres",
+    "open house architecture venues",
+    "music education venues with public concerts",
+    "artist-run spaces",
+    "small performance spaces",
+    "lecture series venues",
+    "independent bookshop event venues",
+    "philosophy and ideas venues",
+    "urbanism and city culture venues",
+    "makerspaces with public workshops",
 ]
 
-LOW_SIGNAL_STRATEGY_PHRASES = {
-    "lates",
-    "friday lates",
-    "late night",
-    "events",
-    "what s on",
-    "whats on",
-    "calendar",
-    "program",
-    "programme",
-}
-
-AGGREGATOR_QUERIES = [
-    "site:ianvisits.co.uk London free art talk",
-    "site:ianvisits.co.uk London gallery events",
-    "site:lectures.london London lectures",
-    "site:lectures.london London talks",
-    "Open House London participating venues",
-    "London independent gallery events programme",
-    "London independent cinema whats on",
-    "London architecture foundation events",
-    "London museum talks programme",
-    "London bookshop events calendar",
+ONE_OFF_EVENT_FAMILIES = [
+    "major food festivals",
+    "major design festivals",
+    "major architecture festivals",
+    "major film festivals",
+    "major literary festivals",
+    "major art fairs",
+    "major craft fairs",
+    "major music festivals",
+    "major 5K runs",
+    "major 10K runs",
+    "half marathons",
+    "large charity runs",
+    "citywide cultural festivals",
+    "open house festivals",
+    "public outdoor cultural festivals",
 ]
 
-EVENT_URL_HINTS = (
+QUERY_STEMS = [
+    "10 {family} in London",
+    "best places for {family} events in London",
+    "London venues known for {family}",
+]
+
+ONE_OFF_QUERY_STEMS = [
+    "major {family} in London official site",
+    "London {family} official event page",
+    "upcoming {family} in London official website",
+]
+
+EVENT_LINK_HINTS = (
     "events",
     "whatson",
     "whats-on",
+    "what's-on",
     "programme",
     "program",
     "calendar",
-    "talk",
-    "screening",
-    "visit/events",
+    "listings",
+    "screenings",
+    "talks",
+    "exhibitions",
+    "diary",
+    "festival",
 )
 
-BLOCKED_DOMAINS = {
-    "duckduckgo.com",
-    "google.com",
-    "bing.com",
-    "yahoo.com",
-    "youtube.com",
-    "facebook.com",
-    "instagram.com",
-    "x.com",
-    "twitter.com",
-    "tiktok.com",
-    "linkedin.com",
-    "wikipedia.org",
-    "eventbrite.com",
-    "meetup.com",
-    "timeout.com",
-}
-
-AGGREGATOR_SOURCE_DOMAINS = {
-    "ianvisits.co.uk",
-    "lectures.london",
-}
-
-# Domains that are useful for discovery seeding but should never be persisted as org entities.
-NON_ENTITY_SOURCE_DOMAINS = {
-    "ianvisits.co.uk",
-    "lectures.london",
-}
-
-# Suffix-based non-entity filters catch subdomains and common publishing/platform sites.
-NON_ENTITY_SOURCE_DOMAIN_SUFFIXES = (
-    "ianvisits.co.uk",
-    "lectures.london",
-    "github.com",
-    "bsky.app",
-    "bsky.social",
-    "blueskyweb.xyz",
-    "theguardian.com",
-    "guardian.co.uk",
-    "ft.com",
-    "eventindustrynews.com",
-    "culturecalling.com",
-    "london.com",
+ABOUT_LINK_HINTS = (
+    "about",
+    "visit",
+    "who-we-are",
+    "our-story",
+    "location",
+    "contact",
 )
-
-SEARCH_REJECT_DOMAIN_SUFFIXES = (
-    "github.com",
-    "bsky.app",
-    "bsky.social",
-    "blueskyweb.xyz",
-    "theguardian.com",
-    "guardian.co.uk",
-    "ft.com",
-    "eventindustrynews.com",
-)
-
-BAD_NAME_PHRASES = {
-    "book your tickets",
-    "courses and meetings",
-    "support ianvisits",
-    "subscribe to read",
-    "event industry news",
-    "arts events listings",
-    "events listings",
-    "overview",
-}
-
-INSTITUTION_KEYWORDS = (
-    "museum",
-    "gallery",
-    "cinema",
-    "theatre",
-    "cultural centre",
-    "cultural center",
-    "cultural institute",
-    "art centre",
-    "art center",
-    "arts centre",
-    "arts center",
-    "foundation",
-    "institute",
-    "house",
-    "bookshop",
-    "community arts",
-)
-
-BOROUGH_ALIASES = {
-    "kensington and chelsea": ["kensington and chelsea", "kensington & chelsea"],
-}
-
-CATEGORY_MAP = {
-    "gallery": ["gallery", "exhibition", "contemporary art"],
-    "museum": ["museum", "heritage", "archive"],
-    "cinema": ["cinema", "film", "screening", "picturehouse"],
-    "bookshop": ["bookshop", "bookshop", "bookstore", "books"],
-    "cultural centre": ["cultural centre", "cultural center", "centre", "center"],
-    "art centre": ["art centre", "art center", "arts centre", "arts center"],
-    "house": ["house museum", "historic house", "house"],
-    "social community center": ["community", "social", "charity", "collective"],
-}
 
 ARTICLE_PATH_HINTS = (
     "/article",
@@ -287,24 +245,89 @@ ARTICLE_TITLE_HINTS = (
     "best of",
 )
 
-PROGRAM_HINTS = (
-    "friday lates",
-    "late-night",
-    "late night",
-    "open day",
-    "special event",
-    "one-off",
-    "one off",
+SEARCH_IGNORE_DOMAINS = {
+    "duckduckgo.com",
+    "google.com",
+    "bing.com",
+    "yahoo.com",
+    "youtube.com",
+    "facebook.com",
+    "instagram.com",
+    "x.com",
+    "twitter.com",
+    "tiktok.com",
+    "linkedin.com",
+    "pinterest.com",
+}
+
+# These domains can be used as discovery leads but never persisted as entities.
+NON_ENTITY_DOMAIN_SUFFIXES = (
+    "ianvisits.co.uk",
+    "lectures.london",
+    "eventbrite.com",
+    "ticketmaster.co.uk",
+    "ticketmaster.com",
+    "feverup.com",
+    "designmynight.com",
+    "secretldn.com",
+    "timeout.com",
+    "culturecalling.com",
+    "eventindustrynews.com",
+    "theguardian.com",
+    "guardian.co.uk",
+    "ft.com",
+    "wikipedia.org",
+    "gov.uk",
+    "londonist.com",
+    "visitlondon.com",
+    "thatsup.co.uk",
 )
 
-PROGRAM_PATH_HINTS = (
-    "/event/",
-    "/events/",
-    "/whatson/",
-    "/whats-on/",
-    "/programme/",
-    "/program/",
-    "/calendar/",
+LEAD_SOURCE_DOMAIN_SUFFIXES = (
+    "ianvisits.co.uk",
+    "lectures.london",
+    "eventbrite.com",
+    "ticketmaster.co.uk",
+    "ticketmaster.com",
+    "feverup.com",
+    "designmynight.com",
+    "secretldn.com",
+    "timeout.com",
+    "culturecalling.com",
+    "eventindustrynews.com",
+    "theguardian.com",
+    "guardian.co.uk",
+    "ft.com",
+    "wikipedia.org",
+    "gov.uk",
+)
+
+REJECT_ENTITY_DOMAIN_SUFFIXES = (
+    "github.com",
+    "bsky.app",
+    "bsky.social",
+    "blueskyweb.xyz",
+    "x.com",
+    "twitter.com",
+    "instagram.com",
+    "facebook.com",
+    "youtube.com",
+    "eventbrite.com",
+    "ticketmaster.co.uk",
+    "ticketmaster.com",
+    "feverup.com",
+    "designmynight.com",
+    "secretldn.com",
+    "timeout.com",
+    "culturecalling.com",
+    "eventindustrynews.com",
+    "ianvisits.co.uk",
+    "lectures.london",
+    "theguardian.com",
+    "guardian.co.uk",
+    "ft.com",
+    "wikipedia.org",
+    "gov.uk",
 )
 
 ORG_SCHEMA_TYPES = {
@@ -318,13 +341,77 @@ ORG_SCHEMA_TYPES = {
     "civicstructure",
     "touristattraction",
     "library",
-    "placeofworship",
     "educationalorganization",
     "collegeoruniversity",
-    "highschool",
-    "school",
     "charity",
     "nonprofit",
+}
+
+PLACE_KEYWORDS = (
+    "museum",
+    "gallery",
+    "cinema",
+    "theatre",
+    "theater",
+    "cultural centre",
+    "cultural center",
+    "cultural institute",
+    "arts centre",
+    "arts center",
+    "art centre",
+    "art center",
+    "foundation",
+    "institute",
+    "community",
+    "bookshop",
+    "library",
+    "venue",
+)
+
+ONE_OFF_EVENT_KEYWORDS = (
+    "festival",
+    "5k",
+    "10k",
+    "half marathon",
+    "marathon",
+    "carnival",
+    "biennale",
+    "triennale",
+    "fair",
+    "expo",
+    "weekender",
+    "open house",
+)
+
+BOROUGH_ALIASES = {
+    "kensington and chelsea": ["kensington & chelsea", "kensington and chelsea"],
+}
+
+CATEGORY_MAP = {
+    "gallery": ["gallery", "exhibition", "contemporary art", "photography"],
+    "museum": ["museum", "heritage", "archive"],
+    "cinema": ["cinema", "film", "screening", "cinematheque", "repertory"],
+    "theatre": ["theatre", "theater", "dance", "performance"],
+    "bookshop": ["bookshop", "bookstore", "literary", "poetry", "writer"],
+    "music venue": ["music", "concert", "chamber", "classical"],
+    "workshop space": ["workshop", "studio", "classes", "makerspace", "craft"],
+    "cultural centre": ["cultural centre", "cultural center", "cultural institute", "diaspora"],
+    "community space": ["community", "charity", "social", "collective"],
+    "lecture venue": ["lecture", "talk", "ideas", "debate", "public programme"],
+    "garden": ["garden", "conservatory", "horticulture"],
+    "one-off event": ["festival", "5k", "10k", "marathon", "fair", "biennale", "expo"],
+}
+
+BAD_NAME_PHRASES = {
+    "book your tickets",
+    "courses and meetings",
+    "support",
+    "subscribe to read",
+    "read more",
+    "buy tickets",
+    "tickets",
+    "event industry news",
+    "overview",
 }
 
 
@@ -339,6 +426,23 @@ def _normalize_token(value: str | None) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _normalize_name(value: str | None) -> str:
+    cleaned = _normalize_token(value)
+    if cleaned.startswith("the "):
+        cleaned = cleaned[4:]
+    return cleaned
+
+
+def _word_count(value: str | None) -> int:
+    if not value:
+        return 0
+    return len([part for part in _normalize_token(value).split(" ") if part])
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def _domain(url: str | None) -> str:
@@ -357,47 +461,28 @@ def _domain_matches_suffix(domain: str | None, suffixes: tuple[str, ...]) -> boo
     return any(value == suffix or value.endswith(f".{suffix}") for suffix in suffixes)
 
 
-def _domain_is_non_entity_source(domain: str | None) -> bool:
-    value = str(domain or "").lower().strip().replace("www.", "")
-    if not value:
-        return True
-    return value in NON_ENTITY_SOURCE_DOMAINS or _domain_matches_suffix(value, NON_ENTITY_SOURCE_DOMAIN_SUFFIXES)
+def _canonicalize_url(url: str | None, *, include_path: bool = True) -> str:
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        host = (parsed.netloc or "").lower().replace("www.", "")
+        if not host:
+            return ""
+        path = (parsed.path or "/").rstrip("/") if include_path else ""
+        path = path or "/"
+        return f"{parsed.scheme}://{host}{path}"
+    except Exception:
+        return ""
 
 
-def _is_event_detail_path(path: str | None) -> bool:
-    segments = [segment for segment in str(path or "").lower().split("/") if segment]
-    if not segments:
-        return False
-
-    markers = {"event", "events", "programme", "program", "calendar", "whatson", "whats-on"}
-    for idx, segment in enumerate(segments):
-        if segment in markers and idx + 1 < len(segments):
-            return True
-    return False
-
-
-def _seed_url_is_likely_org_entry(url: str) -> bool:
-    parsed = urlparse(url)
-    domain = _domain(url)
-    if _domain_matches_suffix(domain, SEARCH_REJECT_DOMAIN_SUFFIXES):
-        return False
-
-    path = (parsed.path or "").lower()
-    if domain in AGGREGATOR_SOURCE_DOMAINS:
-        return True
-
-    if any(hint in path for hint in ARTICLE_PATH_HINTS):
-        return False
-    if _is_event_detail_path(path):
-        return False
-    return True
-
-
-def _normalize_homepage(url: str) -> str:
-    parsed = urlparse(url)
-    scheme = parsed.scheme or "https"
-    host = parsed.netloc.lower()
-    return f"{scheme}://{host}"
+def _normalize_homepage(url: str | None) -> str | None:
+    host = _domain(url)
+    if not host:
+        return None
+    return f"https://{host}"
 
 
 def _looks_like_html_response(response: requests.Response) -> bool:
@@ -405,29 +490,23 @@ def _looks_like_html_response(response: requests.Response) -> bool:
     return "text/html" in content_type or "application/xhtml+xml" in content_type
 
 
-def _domain_root_label(url: str | None) -> str:
-    domain = _domain(url)
-    if not domain:
-        return ""
-    return _clean_text(domain.split(".")[0])
+def _is_binary_like_path(path: str | None) -> bool:
+    lower = str(path or "").lower()
+    return lower.endswith((".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".zip", ".mp4", ".mp3"))
 
 
-def _name_matches_domain(name: str, url: str) -> bool:
-    domain_label = _normalize_token(_domain_root_label(url))
-    if len(domain_label) < 3:
-        return False
-
-    normalized_name = _normalize_token(name)
-    compact_name = normalized_name.replace(" ", "")
-    if domain_label in normalized_name or normalized_name in domain_label:
+def _is_search_ignored_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
         return True
-    if 2 <= len(compact_name) <= 4 and compact_name in domain_label:
+    domain = (parsed.netloc or "").lower().replace("www.", "")
+    if not domain:
+        return True
+    if domain in SEARCH_IGNORE_DOMAINS:
+        return True
+    if _is_binary_like_path(parsed.path):
         return True
     return False
-
-
-def _word_count(value: str | None) -> int:
-    return len([part for part in _normalize_token(value).split(" ") if part])
 
 
 def _looks_like_article_title(value: str | None) -> bool:
@@ -437,141 +516,104 @@ def _looks_like_article_title(value: str | None) -> bool:
     return any(hint in lower for hint in ARTICLE_TITLE_HINTS)
 
 
-def _looks_like_program_text(value: str | None) -> bool:
-    lower = _normalize_token(value)
-    if not lower:
-        return False
-    if any(hint in lower for hint in PROGRAM_HINTS):
-        return True
+def _extract_output_text_from_response(payload: dict[str, Any]) -> str:
+    text_value = _clean_text(payload.get("output_text"))
+    if text_value:
+        return text_value
 
-    tokens = lower.split(" ")
-    return (
-        ("friday" in tokens and "lates" in tokens)
-        or ("late" in tokens and "night" in tokens)
-        or ("open" in tokens and "day" in tokens)
-    )
-
-
-def _looks_like_article_or_listicle(url: str, title: str, description: str, page_text: str) -> bool:
-    parsed = urlparse(url)
-    path = (parsed.path or "").lower()
-    if any(hint in path for hint in ARTICLE_PATH_HINTS):
-        return True
-
-    if _looks_like_article_title(title):
-        return True
-
-    lower_blob = _normalize_token(" ".join([title, description, page_text[:1200]]))
-    article_signals = (
-        "read more",
-        "published",
-        "share this article",
-        "newsletter",
-    )
-    score = 0
-    if "author" in lower_blob:
-        score += 1
-    for signal in article_signals:
-        if signal in lower_blob:
-            score += 1
-    return score >= 2
-
-
-def _looks_like_program_page(url: str, title: str, name: str) -> bool:
-    path = (urlparse(url).path or "").lower()
-    if any(hint in path for hint in PROGRAM_PATH_HINTS):
-        if _looks_like_program_text(title) or _looks_like_program_text(name):
-            return True
-    return _looks_like_program_text(title) and _word_count(name) >= 2
-
-
-def _schema_payload_has_org_type(payload: Any) -> bool:
-    if isinstance(payload, list):
-        return any(_schema_payload_has_org_type(item) for item in payload)
-
-    if not isinstance(payload, dict):
-        return False
-
-    item_type = payload.get("@type")
-    if isinstance(item_type, str):
-        if _normalize_token(item_type).replace(" ", "") in ORG_SCHEMA_TYPES:
-            return True
-    elif isinstance(item_type, list):
-        for value in item_type:
-            if isinstance(value, str) and _normalize_token(value).replace(" ", "") in ORG_SCHEMA_TYPES:
-                return True
-
-    for key in ("@graph", "mainEntity", "itemListElement", "about", "publisher"):
-        if key in payload and _schema_payload_has_org_type(payload[key]):
-            return True
-
-    return False
-
-
-def _has_org_schema_markup(soup: BeautifulSoup) -> bool:
-    for script in soup.select("script[type='application/ld+json']"):
-        raw = script.string or script.get_text(" ", strip=True)
-        if not raw:
+    chunks: list[str] = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
             continue
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            continue
-        if _schema_payload_has_org_type(payload):
-            return True
-    return False
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") == "output_text":
+                text = _clean_text(content.get("text"))
+                if text:
+                    chunks.append(text)
+
+    return "\n".join(chunks).strip()
 
 
-def _site_name_from_meta(soup: BeautifulSoup) -> str | None:
-    tag = soup.find("meta", attrs={"property": "og:site_name"})
-    if not tag:
+def _extract_usage_tokens(payload: dict[str, Any]) -> int:
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return 0
+    for key in ("total_tokens", "input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int) and value > 0:
+            return int(usage.get("total_tokens") or (usage.get("input_tokens", 0) + usage.get("output_tokens", 0)))
+    return 0
+
+
+def _strip_json_fence(raw: str) -> str:
+    value = str(raw or "").strip()
+    fenced = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", value, flags=re.IGNORECASE)
+    if fenced:
+        return fenced.group(1).strip()
+    return value
+
+
+def _parse_json_payload(raw: str) -> Any:
+    text_value = _strip_json_fence(raw)
+    if not text_value:
         return None
-    value = _clean_text(tag.get("content"))
-    return value or None
+
+    try:
+        return json.loads(text_value)
+    except Exception:
+        pass
+
+    for opener, closer in (("[", "]"), ("{", "}")):
+        start = text_value.find(opener)
+        end = text_value.rfind(closer)
+        if start >= 0 and end > start:
+            fragment = text_value[start : end + 1]
+            try:
+                return json.loads(fragment)
+            except Exception:
+                continue
+    return None
 
 
-def _is_valid_org_name(name: str) -> bool:
-    cleaned = _clean_text(name)
-    if len(cleaned) < 3 or len(cleaned) > 90:
+def _env_int(key: str, fallback: int) -> int:
+    raw = str(os.getenv(key, str(fallback))).strip()
+    try:
+        parsed = int(raw)
+        return parsed if parsed > 0 else fallback
+    except Exception:
+        return fallback
+
+
+def _env_bool(key: str, fallback: bool) -> bool:
+    raw = str(os.getenv(key, "1" if fallback else "0")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
         return False
+    return fallback
 
-    if _word_count(cleaned) > 7:
-        return False
 
-    lower = _normalize_token(cleaned)
-    if not lower:
-        return False
+def _parse_discovery_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    if isinstance(value, str) and value:
+        normalized = value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    return None
 
-    if _looks_like_article_title(lower):
-        return False
 
-    if _looks_like_program_text(lower) and _word_count(cleaned) > 2:
-        return False
-
-    blocked_exact = {
-        "home",
-        "events",
-        "what s on",
-        "whats on",
-        "calendar",
-        "program",
-        "programme",
-        "github",
-        "bluesky",
-        "bluesky social",
-    }
-    if lower in blocked_exact:
-        return False
-
-    if any(phrase in lower for phrase in BAD_NAME_PHRASES):
-        return False
-
-    if lower.endswith(" overview"):
-        return False
-    if lower.startswith(("book ", "support ", "subscribe ")):
-        return False
-
-    return True
+def _cache_key(prefix: str, *parts: str) -> str:
+    joined = "|".join(str(part or "") for part in parts)
+    digest = _hash_text(joined)
+    return f"{prefix}:{CACHE_VERSION}:{digest}"
 
 
 def _unwrap_duckduckgo_href(href: str) -> str | None:
@@ -583,7 +625,6 @@ def _unwrap_duckduckgo_href(href: str) -> str | None:
         href = f"https:{href}"
 
     parsed = urlparse(href)
-    # DuckDuckGo often returns relative redirect links such as `/l/?uddg=...`.
     if not parsed.netloc and parsed.path.startswith("/l/"):
         query = parse_qs(parsed.query)
         if "uddg" in query and query["uddg"]:
@@ -606,26 +647,6 @@ def _unwrap_duckduckgo_href(href: str) -> str | None:
     return None
 
 
-def _should_skip_url(url: str) -> bool:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        return True
-
-    domain = (parsed.netloc or "").lower().replace("www.", "")
-    if not domain:
-        return True
-
-    if domain in BLOCKED_DOMAINS:
-        return True
-    if _domain_matches_suffix(domain, SEARCH_REJECT_DOMAIN_SUFFIXES):
-        return True
-
-    if parsed.path.lower().endswith((".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".zip")):
-        return True
-
-    return False
-
-
 def _search_duckduckgo(query: str, max_results: int, timeout: int) -> list[str]:
     response = requests.get(
         "https://duckduckgo.com/html/",
@@ -644,9 +665,9 @@ def _search_duckduckgo(query: str, max_results: int, timeout: int) -> list[str]:
             href = _unwrap_duckduckgo_href(str(anchor.get("href") or ""))
             if not href:
                 continue
-            if _should_skip_url(href):
+            if _is_search_ignored_url(href):
                 continue
-            key = href.strip().lower()
+            key = _canonicalize_url(href) or href.lower().strip()
             if key in seen:
                 continue
             seen.add(key)
@@ -654,307 +675,310 @@ def _search_duckduckgo(query: str, max_results: int, timeout: int) -> list[str]:
             if len(urls) >= max_results:
                 break
 
-    primary_selectors = (
+    selectors = (
         "a.result__a",
         "a[data-testid='result-title-a']",
         ".result__title a[href]",
         "h2 a[href]",
     )
-    _collect_urls(soup.select(", ".join(primary_selectors)))
-
-    # DuckDuckGo markup can vary; fall back to scanning all links if primary selectors fail.
+    _collect_urls(soup.select(", ".join(selectors)))
     if len(urls) < max_results:
         _collect_urls(soup.select("a[href]"))
 
-    return urls
+    return urls[:max_results]
 
 
-def _extract_output_text_from_response(payload: dict[str, Any]) -> str:
-    # `output_text` is SDK-only, but some API responses can still include it.
-    text_value = _clean_text(payload.get("output_text"))
-    if text_value:
-        return text_value
-
-    chunks: list[str] = []
-    for item in payload.get("output") or []:
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content") or []:
-            if not isinstance(content, dict):
-                continue
-            if content.get("type") == "output_text":
-                text = _clean_text(content.get("text"))
-                if text:
-                    chunks.append(text)
-
-    return "\n".join(chunks).strip()
+def _search_web(query: str, max_results: int, timeout: int, provider: str) -> list[str]:
+    # Search intentionally remains cheap/non-LLM. Legacy provider values are normalized.
+    _ = provider
+    return _search_duckduckgo(query=query, max_results=max_results, timeout=timeout)
 
 
-def _extract_urls_from_annotations(payload: dict[str, Any], max_results: int) -> list[str]:
-    urls: list[str] = []
-    seen: set[str] = set()
+def _cached_serp_search(
+    query: str,
+    *,
+    max_results: int,
+    timeout: int,
+    provider: str,
+    metrics: dict[str, int],
+) -> list[str]:
+    key = _cache_key("serp", provider, str(max_results), _normalize_token(query))
+    cached = get_cached_value(key)
+    if isinstance(cached, dict) and isinstance(cached.get("urls"), list):
+        metrics["serp_cache_hits"] = metrics.get("serp_cache_hits", 0) + 1
+        urls = [str(item) for item in cached.get("urls") if isinstance(item, str)]
+        return urls[:max_results]
 
-    def _walk(value: Any) -> None:
-        if len(urls) >= max_results:
-            return
-        if isinstance(value, dict):
-            annotations = value.get("annotations")
-            if isinstance(annotations, list):
-                for annotation in annotations:
-                    if not isinstance(annotation, dict):
-                        continue
-                    direct_url = annotation.get("url")
-                    nested_url = None
-                    nested = annotation.get("url_citation")
-                    if isinstance(nested, dict):
-                        nested_url = nested.get("url")
-                    for candidate in (direct_url, nested_url):
-                        if not isinstance(candidate, str):
-                            continue
-                        if _should_skip_url(candidate):
-                            continue
-                        key = candidate.lower().strip()
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        urls.append(candidate)
-                        if len(urls) >= max_results:
-                            return
-            for item in value.values():
-                _walk(item)
-            return
-        if isinstance(value, list):
-            for item in value:
-                _walk(item)
-
-    _walk(payload)
-    return urls
+    metrics["serp_cache_misses"] = metrics.get("serp_cache_misses", 0) + 1
+    urls = _search_web(query=query, max_results=max_results, timeout=timeout, provider=provider)
+    set_cached_value(key, {"query": query, "urls": urls}, ttl_days=SERP_CACHE_TTL_DAYS)
+    return urls[:max_results]
 
 
-def _extract_urls_from_text_blob(text_blob: str, max_results: int) -> list[str]:
-    text_blob = _clean_text(text_blob)
-    if not text_blob:
-        return []
-
-    candidate_urls: list[str] = []
-
-    def _push(url_value: str | None) -> None:
-        if not url_value:
-            return
-        clean = url_value.strip().strip(".,);]}>\"'")
-        if clean and clean not in candidate_urls:
-            candidate_urls.append(clean)
-
-    raw = text_blob
-    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE)
-    if fenced_match:
-        raw = fenced_match.group(1).strip()
-
-    parsed_json = None
-    try:
-        parsed_json = json.loads(raw)
-    except Exception:
-        parsed_json = None
-
-    if parsed_json is not None:
-        if isinstance(parsed_json, list):
-            for item in parsed_json:
-                if isinstance(item, str):
-                    _push(item)
-                elif isinstance(item, dict):
-                    for key in ("url", "homepage", "events_url", "link"):
-                        if isinstance(item.get(key), str):
-                            _push(item.get(key))
-        elif isinstance(parsed_json, dict):
-            for key in ("urls", "results", "orgs", "organizations", "items", "links"):
-                value = parsed_json.get(key)
-                if isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, str):
-                            _push(item)
-                        elif isinstance(item, dict):
-                            for item_key in ("url", "homepage", "events_url", "link"):
-                                if isinstance(item.get(item_key), str):
-                                    _push(item.get(item_key))
-
-    if not candidate_urls:
-        for found in re.findall(r"https?://[^\s\"'<>]+", text_blob):
-            _push(found)
-
-    urls: list[str] = []
-    seen: set[str] = set()
-    for item in candidate_urls:
-        if _should_skip_url(item):
-            continue
-        key = item.lower().strip()
-        if key in seen:
-            continue
-        seen.add(key)
-        urls.append(item)
-        if len(urls) >= max_results:
-            break
-    return urls
-
-
-def _extract_urls_from_web_sources(payload: dict[str, Any], max_results: int) -> list[str]:
-    urls: list[str] = []
-    seen: set[str] = set()
-
-    def _walk(value: Any) -> None:
-        if len(urls) >= max_results:
-            return
-        if isinstance(value, dict):
-            source_list = value.get("sources")
-            if isinstance(source_list, list):
-                for source in source_list:
-                    if not isinstance(source, dict):
-                        continue
-                    source_url = source.get("url")
-                    if not isinstance(source_url, str):
-                        continue
-                    if _should_skip_url(source_url):
-                        continue
-                    key = source_url.lower().strip()
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    urls.append(source_url)
-                    if len(urls) >= max_results:
-                        return
-            for item in value.values():
-                _walk(item)
-            return
-        if isinstance(value, list):
-            for item in value:
-                _walk(item)
-
-    _walk(payload)
-    return urls
-
-
-def _search_openai_web(query: str, max_results: int, timeout: int) -> list[str]:
+def _openai_request_json(
+    *,
+    system_prompt: str,
+    user_payload: Any,
+    max_output_tokens: int,
+    timeout: int,
+    model: str,
+) -> tuple[Any, int]:
     api_key = _clean_text(os.getenv("OPENAI_API_KEY"))
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is required for DISCOVERY_SEARCH_PROVIDER=openai_web")
-
-    model = _clean_text(os.getenv("DISCOVERY_OPENAI_MODEL")) or "gpt-5"
-    external_web_access = _env_bool("DISCOVERY_OPENAI_EXTERNAL_WEB_ACCESS", True)
-
-    prompt = (
-        f"Use web search to find London organisation entities for query: {query}\n"
-        "Keep only institution entities (museum, gallery, cultural centre/institute/house, community arts venue).\n"
-        "Exclude aggregator/directory/article/listicle pages and one-off program pages.\n"
-        f"Return up to {max_results} unique absolute URLs."
-    )
+        return None, 0
 
     payload = {
         "model": model,
-        "input": prompt,
-        "tool_choice": "auto",
-        "tools": [
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
             {
-                "type": "web_search",
-                "external_web_access": external_web_access,
-                "user_location": {
-                    "type": "approximate",
-                    "country": "GB",
-                    "city": "London",
-                    "region": "London",
-                },
-            }
+                "role": "user",
+                "content": [{"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}],
+            },
         ],
-        "max_output_tokens": 700,
-        "include": ["web_search_call.action.sources"],
+        "max_output_tokens": max_output_tokens,
     }
 
     response = requests.post(
         OPENAI_RESPONSES_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload,
-        timeout=max(20, timeout + 10),
+        timeout=max(20, timeout + 8),
     )
     response.raise_for_status()
 
     response_payload: dict[str, Any] = response.json()
-    from_sources = _extract_urls_from_web_sources(response_payload, max_results=max_results)
-    if from_sources:
-        return from_sources
-    from_annotations = _extract_urls_from_annotations(response_payload, max_results=max_results)
-    if from_annotations:
-        return from_annotations
-    response_text = _extract_output_text_from_response(response_payload)
-    from_text = _extract_urls_from_text_blob(response_text, max_results=max_results)
-    if from_text:
-        return from_text
-    return []
+    raw_text = _extract_output_text_from_response(response_payload)
+    parsed = _parse_json_payload(raw_text)
+    tokens = _extract_usage_tokens(response_payload)
+    return parsed, tokens
 
 
-def _search_web(query: str, max_results: int, timeout: int, provider: str) -> list[str]:
-    provider_key = _normalize_token(provider).replace(" ", "_") or "duckduckgo"
-    if provider_key in {"openai_web", "openai"}:
-        try:
-            return _search_openai_web(query=query, max_results=max_results, timeout=timeout)
-        except Exception:
-            if _env_bool("DISCOVERY_OPENAI_FALLBACK_TO_DUCKDUCKGO", True):
-                return _search_duckduckgo(query=query, max_results=max_results, timeout=timeout)
-            raise
+def _llm_query_ideation(
+    *,
+    max_queries: int,
+    strategy_notes: list[str],
+    boroughs: list[str] | None,
+    categories: list[str] | None,
+    timeout: int,
+) -> tuple[list[dict[str, Any]], int, int]:
+    if not _env_bool("DISCOVERY_ENABLE_LLM_QUERY_IDEATION", True):
+        return [], 0, 0
+    if not _clean_text(os.getenv("OPENAI_API_KEY")):
+        return [], 0, 0
 
-    return _search_duckduckgo(query=query, max_results=max_results, timeout=timeout)
+    model = _clean_text(os.getenv("DISCOVERY_OPENAI_MODEL") or "gpt-5-mini")
+    system_prompt = (
+        "Generate diverse London discovery search queries for cultural venues and major one-off events. "
+        "Return strict JSON object: {\"queries\": [{\"query\": str, \"entity_kind\": \"place\"|\"one_off_event\", "
+        "\"theme\": str}]}. "
+        "Target high recall and diversity across arts, culture, science, literature, film, craft, music, community, gardens, "
+        "architecture, and country-focused cultural institutes. "
+        "Avoid explicit aggregator-domain filters in the query text."
+    )
+    user_payload = {
+        "target_count": max_queries,
+        "style_examples": [
+            "10 chamber music venues in London",
+            "best places for literary salon events in London",
+            "London venues known for architecture talks",
+            "major 5K runs in London official site",
+        ],
+        "strategy_notes": strategy_notes[:20],
+        "borough_focus": boroughs or REGION_HINTS,
+        "category_focus": categories or QUERY_FAMILIES[:20],
+    }
 
+    try:
+        parsed, tokens = _openai_request_json(
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            max_output_tokens=2200,
+            timeout=timeout,
+            model=model,
+        )
+    except Exception:
+        return [], 1, 0
+    if not isinstance(parsed, dict):
+        return [], 1, tokens
 
-def _expand_from_aggregator(url: str, timeout: int, max_results: int) -> list[str]:
-    response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-    response.raise_for_status()
+    items = parsed.get("queries")
+    if not isinstance(items, list):
+        return [], 1, tokens
 
-    if not _looks_like_html_response(response):
-        return []
-
-    page_url = response.url
-    source_domain = _domain(page_url) or _domain(url)
-    if source_domain not in AGGREGATOR_SOURCE_DOMAINS:
-        return []
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    scored: list[tuple[int, str]] = []
+    out: list[dict[str, Any]] = []
     seen: set[str] = set()
-
-    for anchor in soup.select("a[href]"):
-        href = str(anchor.get("href") or "").strip()
-        if not href:
+    for item in items:
+        if not isinstance(item, dict):
             continue
-
-        resolved = urljoin(page_url, href)
-        if _should_skip_url(resolved):
+        query = _clean_text(item.get("query"))
+        if not query:
             continue
-
-        target_domain = _domain(resolved)
-        if not target_domain or target_domain == source_domain:
-            continue
-        if target_domain in BLOCKED_DOMAINS:
-            continue
-
-        key = resolved.strip().lower()
+        key = query.lower()
         if key in seen:
             continue
         seen.add(key)
+        kind = _normalize_token(item.get("entity_kind")).replace(" ", "_")
+        if kind not in {"place", "one_off_event"}:
+            kind = "place"
+        out.append(
+            {
+                "query": query,
+                "source": "llm_query_ideation",
+                "entity_kind_hint": kind,
+                "theme": _clean_text(item.get("theme")) or None,
+            }
+        )
 
-        path = (urlparse(resolved).path or "").lower()
-        anchor_text = _clean_text(anchor.get_text(" ", strip=True)).lower()
-        score = 0
-        if any(hint in path for hint in EVENT_URL_HINTS):
-            score += 4
-        if any(hint in anchor_text for hint in ("event", "what's on", "what’s on", "programme", "program", "calendar", "talk")):
-            score += 3
-        if "london" in path or "london" in anchor_text:
-            score += 2
+    return out, 1, tokens
 
-        scored.append((score, resolved))
 
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [url for _, url in scored[:max_results]]
+def _template_queries(
+    *,
+    max_queries: int,
+    boroughs: list[str] | None,
+    categories: list[str] | None,
+) -> list[dict[str, Any]]:
+    families = list(QUERY_FAMILIES)
+    one_off_families = list(ONE_OFF_EVENT_FAMILIES)
+
+    if categories:
+        category_tokens = {_normalize_token(item) for item in categories if _clean_text(item)}
+        if category_tokens:
+            families = [
+                family
+                for family in QUERY_FAMILIES
+                if any(token in _normalize_token(family) for token in category_tokens)
+            ] or families
+
+    region_pool = boroughs or REGION_HINTS
+
+    generated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _push(query: str, source: str, entity_kind_hint: str, theme: str | None = None) -> None:
+        clean = _clean_text(query)
+        if not clean:
+            return
+        key = clean.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        generated.append(
+            {
+                "query": clean,
+                "source": source,
+                "entity_kind_hint": entity_kind_hint,
+                "theme": _clean_text(theme) or None,
+            }
+        )
+
+    for family in families:
+        for stem in QUERY_STEMS:
+            _push(stem.format(family=family), "template", "place", family)
+        for region in region_pool:
+            _push(f"10 {family} in {region}", "template_region", "place", family)
+            _push(f"best places for {family} events in {region}", "template_region", "place", family)
+
+    for family in one_off_families:
+        for stem in ONE_OFF_QUERY_STEMS:
+            _push(stem.format(family=family), "template_one_off", "one_off_event", family)
+        for region in region_pool[:6]:
+            _push(f"major {family} in {region} official site", "template_one_off_region", "one_off_event", family)
+
+    return generated[: max(max_queries, 1)]
+
+
+def generate_queries(boroughs=None, categories=None):
+    """Legacy helper kept for CLI compatibility."""
+    return _template_queries(max_queries=120, boroughs=boroughs, categories=categories)
+
+
+def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    max_queries = max(10, min(120, int(max_queries)))
+
+    strategy_notes = [_clean_text(item.get("text")) for item in get_strategies() if item.get("active")]
+    strategy_notes = [item for item in strategy_notes if item]
+
+    cache_key = _cache_key(
+        "query_set",
+        str(max_queries),
+        json.dumps(sorted(strategy_notes), ensure_ascii=False),
+        json.dumps(sorted(boroughs or []), ensure_ascii=False),
+        json.dumps(sorted(categories or []), ensure_ascii=False),
+    )
+    cached = get_cached_value(cache_key)
+    if isinstance(cached, dict) and isinstance(cached.get("queries"), list):
+        cached_queries = [item for item in cached.get("queries") if isinstance(item, dict) and _clean_text(item.get("query"))]
+        if cached_queries:
+            return cached_queries[:max_queries], {
+                "cache_hit": True,
+                "llm_calls": 0,
+                "llm_tokens": 0,
+                "strategy_count": len(strategy_notes),
+            }
+
+    template_pool = _template_queries(max_queries=max_queries * 3, boroughs=boroughs, categories=categories)
+    llm_pool, llm_calls, llm_tokens = _llm_query_ideation(
+        max_queries=min(120, max_queries * 2),
+        strategy_notes=strategy_notes,
+        boroughs=boroughs,
+        categories=categories,
+        timeout=_env_int("DISCOVERY_LLM_TIMEOUT", 25),
+    )
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # Interleave LLM and templates for diversity + safety fallback.
+    llm_idx = 0
+    template_idx = 0
+    while len(merged) < max_queries:
+        advanced = False
+        for source_name in ("llm", "template", "template"):
+            if len(merged) >= max_queries:
+                break
+            if source_name == "llm" and llm_idx < len(llm_pool):
+                item = llm_pool[llm_idx]
+                llm_idx += 1
+            elif source_name.startswith("template") and template_idx < len(template_pool):
+                item = template_pool[template_idx]
+                template_idx += 1
+            else:
+                continue
+
+            query = _clean_text(item.get("query"))
+            if not query:
+                continue
+            key = query.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            advanced = True
+
+        if not advanced:
+            break
+
+    if not merged:
+        merged = template_pool[:max_queries]
+
+    set_cached_value(
+        cache_key,
+        {
+            "queries": merged,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "strategy_count": len(strategy_notes),
+        },
+        ttl_days=QUERY_CACHE_TTL_DAYS,
+    )
+
+    return merged[:max_queries], {
+        "cache_hit": False,
+        "llm_calls": llm_calls,
+        "llm_tokens": llm_tokens,
+        "strategy_count": len(strategy_notes),
+    }
 
 
 def _extract_title_and_description(soup: BeautifulSoup) -> tuple[str, str]:
@@ -969,203 +993,1091 @@ def _extract_title_and_description(soup: BeautifulSoup) -> tuple[str, str]:
     return title, description
 
 
-def _extract_name(page_url: str, soup: BeautifulSoup, title: str) -> str | None:
-    site_name = _site_name_from_meta(soup)
-    if site_name and _is_valid_org_name(site_name):
-        return site_name
+def _extract_jsonld_types(soup: BeautifulSoup) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
 
-    if title:
-        split_parts: list[str] = []
-        for sep in ("|", " - ", "—", "·"):
-            if sep in title:
-                split_parts = [_clean_text(part) for part in title.split(sep) if _clean_text(part)]
-                break
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            item_type = value.get("@type")
+            if isinstance(item_type, str):
+                normalized = _normalize_token(item_type).replace(" ", "")
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    out.append(normalized)
+            elif isinstance(item_type, list):
+                for part in item_type:
+                    if isinstance(part, str):
+                        normalized = _normalize_token(part).replace(" ", "")
+                        if normalized and normalized not in seen:
+                            seen.add(normalized)
+                            out.append(normalized)
+            for nested in value.values():
+                _walk(nested)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
 
-        if split_parts:
-            if site_name:
-                for part in split_parts:
-                    if _normalize_token(part) == _normalize_token(site_name) and _is_valid_org_name(part):
-                        return part
+    for script in soup.select("script[type='application/ld+json']"):
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        _walk(payload)
 
-            if len(split_parts) >= 2:
-                left = split_parts[0]
-                right = split_parts[-1]
-                if (_looks_like_program_text(left) or _looks_like_article_title(left)) and _is_valid_org_name(right):
-                    return right
-
-            for part in split_parts:
-                if _is_valid_org_name(part) and not _looks_like_program_text(part):
-                    return part
-
-        if _is_valid_org_name(title) and not _looks_like_article_title(title):
-            return title
-
-    host = _domain(page_url)
-    if host:
-        base = host.split(".")[0].replace("-", " ").strip()
-        base = _clean_text(base.title())
-        if _is_valid_org_name(base):
-            return base
-
-    return None
+    return out[:20]
 
 
-def _infer_borough(text_blob: str) -> str | None:
-    lower = text_blob.lower()
+def _extract_address_snippets(text_blob: str) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
 
-    for borough in BOROUGHS:
-        borough_lower = borough.lower()
-        if borough_lower in lower:
-            return borough
+    postcode_pattern = re.compile(r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b", flags=re.IGNORECASE)
+    for match in postcode_pattern.finditer(text_blob or ""):
+        postcode = _clean_text(match.group(1)).upper()
+        if not postcode or postcode in seen:
+            continue
+        seen.add(postcode)
+        start = max(0, match.start() - 70)
+        end = min(len(text_blob), match.end() + 50)
+        snippet = _clean_text((text_blob or "")[start:end])
+        if snippet:
+            lines.append(snippet)
 
-        for alias in BOROUGH_ALIASES.get(borough_lower, []):
-            if alias in lower:
-                return borough
-
-    return None
-
-
-def _infer_category(text_blob: str) -> str:
-    lower = text_blob.lower()
-    best = "other"
-    best_score = 0
-
-    for category, keywords in CATEGORY_MAP.items():
-        score = 0
-        for keyword in keywords:
-            if keyword in lower:
-                score += 1
-        if score > best_score:
-            best_score = score
-            best = category
-
-    return best
+    return lines[:10]
 
 
-def _extract_events_url(page_url: str, soup: BeautifulSoup) -> str | None:
-    parsed_page = urlparse(page_url)
-    page_path = (parsed_page.path or "").lower()
-    if any(hint in page_path for hint in EVENT_URL_HINTS) and not _is_event_detail_path(page_path):
-        return page_url
+def _collect_nav_terms(soup: BeautifulSoup) -> list[str]:
+    nav_terms: list[str] = []
+    seen: set[str] = set()
 
-    best_url = None
-    best_score = -1
+    nav_anchors = soup.select("nav a, header a")
+    if not nav_anchors:
+        nav_anchors = soup.select("a")
+
+    for anchor in nav_anchors:
+        text_value = _clean_text(anchor.get_text(" ", strip=True))
+        if not text_value:
+            continue
+        lower = text_value.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        nav_terms.append(text_value)
+        if len(nav_terms) >= 40:
+            break
+
+    return nav_terms
+
+
+def _collect_internal_links(page_url: str, soup: BeautifulSoup, max_links: int = 80) -> list[dict[str, str]]:
     page_domain = _domain(page_url)
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
 
     for anchor in soup.select("a[href]"):
         href = str(anchor.get("href") or "").strip()
         if not href:
             continue
-
-        resolved = urljoin(page_url, href)
-        if _domain(resolved) != page_domain:
+        absolute = urljoin(page_url, href)
+        if _domain(absolute) != page_domain:
             continue
-
-        parsed = urlparse(resolved)
-        path = (parsed.path or "").lower()
-        if not any(hint in path for hint in EVENT_URL_HINTS):
+        canonical = _canonicalize_url(absolute)
+        if not canonical:
             continue
-        if _is_event_detail_path(path):
+        if canonical in seen:
             continue
+        seen.add(canonical)
 
-        score = 0
-        for hint in EVENT_URL_HINTS:
-            if hint in path:
-                score += 5
+        links.append(
+            {
+                "url": canonical,
+                "text": _clean_text(anchor.get_text(" ", strip=True))[:120],
+            }
+        )
+        if len(links) >= max_links:
+            break
 
-        anchor_text = _clean_text(anchor.get_text(" ", strip=True)).lower()
-        if "event" in anchor_text or "what's on" in anchor_text or "what’s on" in anchor_text or "programme" in anchor_text:
-            score += 20
-
-        if score > best_score:
-            best_score = score
-            best_url = resolved
-
-    return best_url
+    return links
 
 
-def _is_london_related(text_blob: str) -> bool:
-    lower = text_blob.lower()
-    if "london" in lower:
-        return True
-    return _infer_borough(lower) is not None
-
-
-def _contains_institution_keyword(value: str | None) -> bool:
-    blob = _normalize_token(value)
-    if not blob:
-        return False
-    return any(_normalize_token(keyword) in blob for keyword in INSTITUTION_KEYWORDS)
-
-
-def _looks_like_non_cultural_academic(name: str, text_blob: str) -> bool:
-    normalized_name = _normalize_token(name)
-    if not normalized_name:
-        return False
-
-    academic_markers = ("university", "college", "school", "lse", "soas")
-    if not any(marker in normalized_name.split(" ") or marker in normalized_name for marker in academic_markers):
-        return False
-
-    culture_markers = ("museum", "gallery", "cinema", "theatre", "cultural centre", "cultural center", "art centre", "arts center")
-    normalized_blob = _normalize_token(text_blob)
-    return not any(marker in normalized_blob for marker in culture_markers)
-
-
-def _extract_org_candidate(url: str, timeout: int) -> dict[str, Any] | None:
-    response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-    response.raise_for_status()
-
-    resolved_domain = _domain(response.url)
-    if _domain_is_non_entity_source(resolved_domain):
+def _fetch_page_bundle(url: str, timeout: int, metrics: dict[str, int]) -> dict[str, Any] | None:
+    canonical = _canonicalize_url(url)
+    if not canonical:
         return None
 
+    key = _cache_key("bundle", canonical)
+    cached = get_cached_value(key)
+    if isinstance(cached, dict) and cached.get("url"):
+        metrics["bundle_cache_hits"] = metrics.get("bundle_cache_hits", 0) + 1
+        return cached
+
+    metrics["bundle_cache_misses"] = metrics.get("bundle_cache_misses", 0) + 1
+
+    response = requests.get(canonical, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+    response.raise_for_status()
     if not _looks_like_html_response(response):
+        return None
+
+    final_url = _canonicalize_url(response.url)
+    if not final_url:
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
     title, description = _extract_title_and_description(soup)
 
-    page_text = _clean_text(soup.get_text(" ", strip=True))
-    text_blob = _clean_text(" ".join([title, description, page_text[:8000], url]))
-    if not _is_london_related(text_blob):
+    h1_tag = soup.find("h1")
+    h1 = _clean_text(h1_tag.get_text(" ", strip=True) if h1_tag else "")
+
+    headings: list[str] = []
+    for heading in soup.select("h2, h3"):
+        text_value = _clean_text(heading.get_text(" ", strip=True))
+        if text_value and text_value.lower() not in {item.lower() for item in headings}:
+            headings.append(text_value)
+            if len(headings) >= 18:
+                break
+
+    body_text = _clean_text(soup.get_text(" ", strip=True))
+    footer_text = _clean_text(" ".join(node.get_text(" ", strip=True) for node in soup.select("footer")[:2]))
+
+    site_bundle = {
+        "url": final_url,
+        "domain": _domain(final_url),
+        "title": title,
+        "meta_description": description,
+        "h1": h1,
+        "headings": headings,
+        "nav_terms": _collect_nav_terms(soup),
+        "footer_snippet": footer_text[:500],
+        "jsonld_types": _extract_jsonld_types(soup),
+        "address_snippets": _extract_address_snippets(body_text[:12000]),
+        "internal_links": _collect_internal_links(final_url, soup, max_links=90),
+        "text_preview": body_text[:2200],
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    set_cached_value(key, site_bundle, ttl_days=BUNDLE_CACHE_TTL_DAYS)
+    return site_bundle
+
+
+def _is_lead_source_url(url: str, title: str = "", description: str = "") -> bool:
+    domain = _domain(url)
+    if _domain_matches_suffix(domain, LEAD_SOURCE_DOMAIN_SUFFIXES):
+        return True
+
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    if any(hint in path for hint in ARTICLE_PATH_HINTS):
+        return True
+
+    lower_blob = _normalize_token(" ".join([title, description, path]))
+    if _looks_like_article_title(lower_blob):
+        return True
+
+    lead_markers = ("list", "best", "top", "roundup", "things to do", "near me")
+    return any(marker in lower_blob for marker in lead_markers)
+
+
+def _name_candidates_from_text(text: str, limit: int = 20) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    # Title-ish phrases catch many venue names from heading/link text.
+    for match in re.findall(r"\b([A-Z][A-Za-z0-9&'\-]{1,}(?:\s+[A-Z][A-Za-z0-9&'\-]{1,}){0,6})\b", text or ""):
+        name = _clean_text(match)
+        if not name:
+            continue
+        if _word_count(name) < 2:
+            continue
+        if len(name) > 90:
+            continue
+        lower = name.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        out.append(name)
+        if len(out) >= limit:
+            break
+
+    return out
+
+
+def _extract_lead_entities_with_llm(
+    lead_pages: list[dict[str, Any]],
+    *,
+    timeout: int,
+    batch_size: int,
+) -> tuple[dict[str, list[dict[str, Any]]], int, int]:
+    if not lead_pages:
+        return {}, 0, 0
+    if not _clean_text(os.getenv("OPENAI_API_KEY")):
+        return {}, 0, 0
+
+    model = _clean_text(os.getenv("DISCOVERY_OPENAI_MODEL") or "gpt-5-mini")
+    calls = 0
+    tokens_total = 0
+    extracted: dict[str, list[dict[str, Any]]] = {}
+
+    system_prompt = (
+        "You extract candidate London entities from messy lead pages. "
+        "Return strict JSON object: {\"items\": [{\"lead_url\": str, \"candidates\": ["
+        "{\"name\": str, \"entity_kind\": \"place\"|\"one_off_event\", \"category_hint\": str|null, "
+        "\"borough_hint\": str|null, \"confidence\": number, \"reason\": str}]}]}. "
+        "Entity rules: keep only real venues/institutions/organizers or major one-off events with official landing pages. "
+        "Do not return aggregators, marketplaces, directories, social networks, publishers, or article headings."
+    )
+
+    for start in range(0, len(lead_pages), max(1, batch_size)):
+        batch = lead_pages[start : start + max(1, batch_size)]
+        user_payload = {
+            "pages": [
+                {
+                    "lead_url": item.get("url"),
+                    "domain": item.get("domain"),
+                    "title": item.get("title"),
+                    "meta_description": item.get("meta_description"),
+                    "h1": item.get("h1"),
+                    "headings": item.get("headings", [])[:10],
+                    "top_links": item.get("internal_links", [])[:25],
+                    "text_preview": item.get("text_preview", "")[:1200],
+                }
+                for item in batch
+            ]
+        }
+
+        try:
+            parsed, tokens = _openai_request_json(
+                system_prompt=system_prompt,
+                user_payload=user_payload,
+                max_output_tokens=2600,
+                timeout=timeout,
+                model=model,
+            )
+            calls += 1
+            tokens_total += tokens
+        except Exception:
+            continue
+
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
+            # Retry once with a stricter compact prompt.
+            retry_prompt = system_prompt + " Output must be valid JSON only."
+            try:
+                parsed, retry_tokens = _openai_request_json(
+                    system_prompt=retry_prompt,
+                    user_payload=user_payload,
+                    max_output_tokens=2600,
+                    timeout=timeout,
+                    model=model,
+                )
+                calls += 1
+                tokens_total += retry_tokens
+            except Exception:
+                continue
+
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
+            continue
+
+        for item in parsed.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            lead_url = _canonicalize_url(item.get("lead_url"))
+            if not lead_url:
+                continue
+            candidates = item.get("candidates")
+            if not isinstance(candidates, list):
+                continue
+            cleaned: list[dict[str, Any]] = []
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                name = _clean_text(candidate.get("name"))
+                if not name or len(name) < 3 or len(name) > 100:
+                    continue
+                kind = _normalize_token(candidate.get("entity_kind")).replace(" ", "_")
+                if kind not in {"place", "one_off_event"}:
+                    kind = "place"
+                cleaned.append(
+                    {
+                        "name": name,
+                        "entity_kind": kind,
+                        "category_hint": _clean_text(candidate.get("category_hint")) or None,
+                        "borough_hint": _clean_text(candidate.get("borough_hint")) or None,
+                        "confidence": float(candidate.get("confidence") or 0),
+                        "reason": _clean_text(candidate.get("reason")) or None,
+                    }
+                )
+            if cleaned:
+                extracted[lead_url] = cleaned
+
+    return extracted, calls, tokens_total
+
+
+def _extract_entities_from_leads(
+    lead_bundles: list[dict[str, Any]],
+    *,
+    timeout: int,
+    llm_batch_size: int,
+    metrics: dict[str, int],
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    if not lead_bundles:
+        return results
+
+    uncached_for_llm: list[dict[str, Any]] = []
+
+    for bundle in lead_bundles:
+        cache_fingerprint = _hash_text(
+            json.dumps(
+                {
+                    "u": bundle.get("url"),
+                    "t": bundle.get("title"),
+                    "h1": bundle.get("h1"),
+                    "h2": bundle.get("headings", [])[:8],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        key = _cache_key("lead_extract", str(bundle.get("url")), cache_fingerprint)
+        cached = get_cached_value(key)
+        if isinstance(cached, dict) and isinstance(cached.get("candidates"), list):
+            metrics["lead_extract_cache_hits"] = metrics.get("lead_extract_cache_hits", 0) + 1
+            for item in cached.get("candidates", []):
+                if not isinstance(item, dict):
+                    continue
+                name = _clean_text(item.get("name"))
+                if not name:
+                    continue
+                results.append(
+                    {
+                        "name": name,
+                        "entity_kind": _normalize_token(item.get("entity_kind")).replace(" ", "_") or "place",
+                        "category_hint": _clean_text(item.get("category_hint")) or None,
+                        "borough_hint": _clean_text(item.get("borough_hint")) or None,
+                        "source_url": bundle.get("url"),
+                    }
+                )
+            continue
+
+        metrics["lead_extract_cache_misses"] = metrics.get("lead_extract_cache_misses", 0) + 1
+        uncached_for_llm.append({"bundle": bundle, "cache_key": key})
+
+    llm_input = [item["bundle"] for item in uncached_for_llm]
+    llm_results, llm_calls, llm_tokens = _extract_lead_entities_with_llm(
+        llm_input,
+        timeout=timeout,
+        batch_size=llm_batch_size,
+    )
+    metrics["llm_calls"] = metrics.get("llm_calls", 0) + llm_calls
+    metrics["llm_tokens"] = metrics.get("llm_tokens", 0) + llm_tokens
+
+    for wrapped in uncached_for_llm:
+        bundle = wrapped["bundle"]
+        key = wrapped["cache_key"]
+        lead_url = _canonicalize_url(bundle.get("url"))
+
+        llm_candidates = llm_results.get(lead_url, []) if lead_url else []
+        heuristic_candidates = _name_candidates_from_text(
+            " ".join(
+                [
+                    _clean_text(bundle.get("title")),
+                    _clean_text(bundle.get("h1")),
+                    " ".join(bundle.get("headings", [])[:12]),
+                    " ".join(item.get("text", "") for item in bundle.get("internal_links", [])[:40]),
+                ]
+            ),
+            limit=18,
+        )
+
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for item in llm_candidates:
+            name = _clean_text(item.get("name"))
+            if not name:
+                continue
+            lower = name.lower()
+            if lower in seen:
+                continue
+            seen.add(lower)
+            merged.append(item)
+
+        for name in heuristic_candidates:
+            lower = name.lower()
+            if lower in seen:
+                continue
+            seen.add(lower)
+            merged.append(
+                {
+                    "name": name,
+                    "entity_kind": "place",
+                    "category_hint": None,
+                    "borough_hint": None,
+                    "confidence": 0.35,
+                    "reason": "heuristic_heading_link_name",
+                }
+            )
+
+        set_cached_value(key, {"candidates": merged}, ttl_days=LEAD_EXTRACT_CACHE_TTL_DAYS)
+        for item in merged:
+            name = _clean_text(item.get("name"))
+            if not name:
+                continue
+            results.append(
+                {
+                    "name": name,
+                    "entity_kind": _normalize_token(item.get("entity_kind")).replace(" ", "_") or "place",
+                    "category_hint": _clean_text(item.get("category_hint")) or None,
+                    "borough_hint": _clean_text(item.get("borough_hint")) or None,
+                    "source_url": bundle.get("url"),
+                }
+            )
+
+    deduped: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for item in results:
+        key = _normalize_name(item.get("name"))
+        if not key or len(key) < 3:
+            continue
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        deduped.append(item)
+
+    return deduped
+
+
+def _select_best_resolved_url(urls: list[str]) -> str | None:
+    for url in urls:
+        domain = _domain(url)
+        if not domain:
+            continue
+        if _domain_matches_suffix(domain, REJECT_ENTITY_DOMAIN_SUFFIXES):
+            continue
+        return _canonicalize_url(url)
+    return None
+
+
+def _resolve_lead_candidates_to_urls(
+    candidates: list[dict[str, Any]],
+    *,
+    max_results_per_query: int,
+    timeout: int,
+    provider: str,
+    max_candidates: int,
+    metrics: dict[str, int],
+) -> list[dict[str, Any]]:
+    resolved: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    for item in candidates:
+        if len(resolved) >= max_candidates:
+            break
+
+        name = _clean_text(item.get("name"))
+        if not name:
+            continue
+        name_key = _normalize_name(name)
+        if not name_key or name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+
+        query = f'"{name}" London official site events'
+        try:
+            urls = _cached_serp_search(
+                query,
+                max_results=max_results_per_query,
+                timeout=timeout,
+                provider=provider,
+                metrics=metrics,
+            )
+        except Exception:
+            continue
+
+        selected = _select_best_resolved_url(urls)
+        if not selected:
+            continue
+
+        resolved.append(
+            {
+                "url": selected,
+                "seed_name": name,
+                "entity_kind_hint": _normalize_token(item.get("entity_kind")).replace(" ", "_") or "place",
+                "category_hint": _clean_text(item.get("category_hint")) or None,
+                "borough_hint": _clean_text(item.get("borough_hint")) or None,
+                "source": "lead_resolve",
+            }
+        )
+
+    return resolved
+
+
+def _pick_internal_urls(bundle: dict[str, Any], max_urls: int) -> list[str]:
+    domain = _domain(bundle.get("url"))
+    if not domain:
+        return []
+
+    ranked: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for link in bundle.get("internal_links") or []:
+        if not isinstance(link, dict):
+            continue
+        url_value = _canonicalize_url(link.get("url"))
+        if not url_value:
+            continue
+        if _domain(url_value) != domain:
+            continue
+        if url_value in seen:
+            continue
+        seen.add(url_value)
+
+        path = (urlparse(url_value).path or "").lower()
+        text_value = _normalize_token(link.get("text"))
+        score = 0
+        for hint in EVENT_LINK_HINTS:
+            if hint in path or hint in text_value:
+                score += 8
+        for hint in ABOUT_LINK_HINTS:
+            if hint in path or hint in text_value:
+                score += 5
+        if path in {"", "/"}:
+            score += 1
+        ranked.append((score, url_value))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [url for _, url in ranked[:max_urls]]
+
+
+def _build_domain_bundle(
+    *,
+    domain: str,
+    seed_urls: list[str],
+    timeout: int,
+    max_urls_per_domain: int,
+    metrics: dict[str, int],
+) -> dict[str, Any] | None:
+    canonical_seed_urls: list[str] = []
+    seen: set[str] = set()
+
+    homepage = _normalize_homepage(seed_urls[0] if seed_urls else f"https://{domain}")
+    if homepage:
+        canonical_seed_urls.append(homepage)
+        seen.add(homepage)
+
+    for url in seed_urls:
+        canonical = _canonicalize_url(url)
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        canonical_seed_urls.append(canonical)
+
+    page_bundles: list[dict[str, Any]] = []
+
+    for url in canonical_seed_urls:
+        if len(page_bundles) >= max(1, max_urls_per_domain):
+            break
+        try:
+            bundle = _fetch_page_bundle(url, timeout=timeout, metrics=metrics)
+        except Exception:
+            continue
+        if not bundle:
+            continue
+        page_bundles.append(bundle)
+
+        for expanded in _pick_internal_urls(bundle, max_urls=max(1, max_urls_per_domain)):
+            if len(page_bundles) >= max(1, max_urls_per_domain):
+                break
+            if expanded in seen:
+                continue
+            seen.add(expanded)
+            try:
+                extra = _fetch_page_bundle(expanded, timeout=timeout, metrics=metrics)
+            except Exception:
+                continue
+            if not extra:
+                continue
+            page_bundles.append(extra)
+
+    if not page_bundles:
         return None
 
-    name = _extract_name(response.url, soup, title)
-    if not name:
+    primary = page_bundles[0]
+
+    merged_nav: list[str] = []
+    merged_headings: list[str] = []
+    merged_addresses: list[str] = []
+    merged_jsonld: list[str] = []
+    merged_event_candidates: list[str] = []
+    seen_nav: set[str] = set()
+    seen_headings: set[str] = set()
+    seen_addr: set[str] = set()
+    seen_types: set[str] = set()
+    seen_event_urls: set[str] = set()
+
+    for page in page_bundles:
+        for item in page.get("nav_terms", [])[:25]:
+            normalized = _normalize_token(item)
+            if not normalized or normalized in seen_nav:
+                continue
+            seen_nav.add(normalized)
+            merged_nav.append(_clean_text(item))
+
+        for item in page.get("headings", [])[:16]:
+            normalized = _normalize_token(item)
+            if not normalized or normalized in seen_headings:
+                continue
+            seen_headings.add(normalized)
+            merged_headings.append(_clean_text(item))
+
+        for item in page.get("address_snippets", [])[:12]:
+            normalized = _normalize_token(item)
+            if not normalized or normalized in seen_addr:
+                continue
+            seen_addr.add(normalized)
+            merged_addresses.append(_clean_text(item))
+
+        for item in page.get("jsonld_types", [])[:20]:
+            normalized = _normalize_token(item).replace(" ", "")
+            if not normalized or normalized in seen_types:
+                continue
+            seen_types.add(normalized)
+            merged_jsonld.append(normalized)
+
+        for link in page.get("internal_links", [])[:60]:
+            if not isinstance(link, dict):
+                continue
+            url_value = _canonicalize_url(link.get("url"))
+            if not url_value:
+                continue
+            path = (urlparse(url_value).path or "").lower()
+            text_value = _normalize_token(link.get("text"))
+            if any(hint in path or hint in text_value for hint in EVENT_LINK_HINTS):
+                if url_value not in seen_event_urls:
+                    seen_event_urls.add(url_value)
+                    merged_event_candidates.append(url_value)
+
+    site_bundle = {
+        "domain": domain,
+        "homepage": _normalize_homepage(primary.get("url")) or homepage,
+        "seed_urls": canonical_seed_urls[: max(1, max_urls_per_domain * 2)],
+        "sample_urls": [item.get("url") for item in page_bundles[: max(1, max_urls_per_domain)] if item.get("url")],
+        "title": _clean_text(primary.get("title")),
+        "meta_description": _clean_text(primary.get("meta_description")),
+        "h1": _clean_text(primary.get("h1")),
+        "headings": merged_headings[:30],
+        "nav_terms": merged_nav[:40],
+        "footer_snippet": _clean_text(primary.get("footer_snippet"))[:500],
+        "jsonld_types": merged_jsonld[:30],
+        "address_snippets": merged_addresses[:16],
+        "events_link_candidates": merged_event_candidates[:25],
+        "text_preview": _clean_text(primary.get("text_preview"))[:1800],
+    }
+
+    return site_bundle
+
+
+def _infer_borough(text_blob: str) -> str | None:
+    lower = text_blob.lower()
+    for borough in BOROUGHS:
+        borough_lower = borough.lower()
+        if borough_lower in lower:
+            return borough
+        for alias in BOROUGH_ALIASES.get(borough_lower, []):
+            if alias in lower:
+                return borough
+    return None
+
+
+def _infer_category(text_blob: str, entity_kind: str = "place") -> str:
+    if entity_kind == "one_off_event":
+        return "one-off event"
+
+    lower = _normalize_token(text_blob)
+    best = "other"
+    best_score = 0
+    for category, keywords in CATEGORY_MAP.items():
+        if category == "one-off event":
+            continue
+        score = 0
+        for keyword in keywords:
+            if _normalize_token(keyword) in lower:
+                score += 1
+        if score > best_score:
+            best = category
+            best_score = score
+    return best
+
+
+def _guess_name_from_bundle(bundle: dict[str, Any]) -> str | None:
+    title = _clean_text(bundle.get("title"))
+    h1 = _clean_text(bundle.get("h1"))
+
+    candidates: list[str] = []
+    if h1:
+        candidates.append(h1)
+    if title:
+        for sep in ("|", " - ", "—", "·", ":"):
+            if sep in title:
+                parts = [_clean_text(part) for part in title.split(sep) if _clean_text(part)]
+                candidates.extend(parts)
+            else:
+                candidates.append(title)
+    for heading in bundle.get("headings", [])[:8]:
+        if heading:
+            candidates.append(_clean_text(heading))
+
+    domain_label = (bundle.get("domain") or "").split(".")[0].replace("-", " ").strip()
+    if domain_label:
+        candidates.append(_clean_text(domain_label.title()))
+
+    seen: set[str] = set()
+    for name in candidates:
+        if not name:
+            continue
+        normalized = _normalize_name(name)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+
+        if _word_count(name) == 0 or _word_count(name) > 8:
+            continue
+        if len(name) < 3 or len(name) > 100:
+            continue
+        if _looks_like_article_title(name):
+            continue
+        if any(phrase in normalized for phrase in BAD_NAME_PHRASES):
+            continue
+        if normalized in {"home", "events", "calendar", "about", "visit", "tickets", "book tickets"}:
+            continue
+        return name
+
+    return None
+
+
+def _pick_events_url(bundle: dict[str, Any]) -> str | None:
+    for url in bundle.get("events_link_candidates", []):
+        path = (urlparse(url).path or "").lower()
+        if any(hint in path for hint in EVENT_LINK_HINTS):
+            return url
+    homepage = _normalize_homepage(bundle.get("homepage") or bundle.get("sample_urls", [""])[0])
+    return homepage
+
+
+def _is_valid_entity_name(name: str | None) -> bool:
+    clean = _clean_text(name)
+    if len(clean) < 3 or len(clean) > 100:
+        return False
+    if _word_count(clean) > 8:
+        return False
+
+    lower = _normalize_name(clean)
+    if not lower:
+        return False
+    if _looks_like_article_title(lower):
+        return False
+    if any(phrase in lower for phrase in BAD_NAME_PHRASES):
+        return False
+    if lower.endswith(" overview"):
+        return False
+    if lower.startswith(("book ", "support ", "subscribe ", "read ", "view ")):
+        return False
+    return True
+
+
+def _heuristic_gate(bundle: dict[str, Any]) -> dict[str, Any]:
+    domain = str(bundle.get("domain") or "").strip().lower()
+    if not domain:
+        return {"decision": "reject", "reason_codes": ["missing_domain"]}
+
+    if _domain_matches_suffix(domain, REJECT_ENTITY_DOMAIN_SUFFIXES):
+        return {"decision": "reject", "reason_codes": ["blocked_domain_suffix"]}
+
+    blob = " ".join(
+        [
+            _clean_text(bundle.get("title")),
+            _clean_text(bundle.get("meta_description")),
+            _clean_text(bundle.get("h1")),
+            " ".join(bundle.get("headings", [])[:12]),
+            " ".join(bundle.get("nav_terms", [])[:20]),
+            _clean_text(bundle.get("footer_snippet")),
+            _clean_text(bundle.get("text_preview")),
+        ]
+    )
+    normalized_blob = _normalize_token(blob)
+
+    reason_codes: list[str] = []
+    positive = 0
+    negative = 0
+
+    if "london" in normalized_blob:
+        positive += 2
+        reason_codes.append("mentions_london")
+
+    inferred_borough = _infer_borough(blob)
+    if inferred_borough:
+        positive += 1
+        reason_codes.append("mentions_borough")
+
+    if bundle.get("address_snippets"):
+        positive += 2
+        reason_codes.append("has_address_signal")
+
+    jsonld_types = {str(item).lower() for item in bundle.get("jsonld_types", []) if item}
+    if jsonld_types & ORG_SCHEMA_TYPES:
+        positive += 2
+        reason_codes.append("has_org_schema")
+
+    if any(keyword in normalized_blob for keyword in (_normalize_token(item) for item in PLACE_KEYWORDS)):
+        positive += 2
+        reason_codes.append("institution_keywords")
+
+    if bundle.get("events_link_candidates"):
+        positive += 2
+        reason_codes.append("has_events_links")
+
+    if any(marker in normalized_blob for marker in ("marketplace", "ticket marketplace", "book tickets", "buy tickets")):
+        negative += 3
+        reason_codes.append("marketplace_language")
+
+    homepage = _normalize_homepage(bundle.get("homepage") or bundle.get("sample_urls", [""])[0])
+    if homepage and _is_lead_source_url(homepage, bundle.get("title", ""), bundle.get("meta_description", "")):
+        negative += 2
+        reason_codes.append("lead_source_pattern")
+
+    if _looks_like_article_title(bundle.get("title")):
+        negative += 2
+        reason_codes.append("article_title_pattern")
+
+    name_guess = _guess_name_from_bundle(bundle)
+    if not _is_valid_entity_name(name_guess):
+        negative += 2
+        reason_codes.append("weak_name_signal")
+
+    one_off_score = 0
+    if any(keyword in normalized_blob for keyword in ONE_OFF_EVENT_KEYWORDS):
+        one_off_score += 2
+    if "official" in normalized_blob and "festival" in normalized_blob:
+        one_off_score += 1
+
+    entity_kind = "one_off_event" if one_off_score >= 2 and positive >= 2 else "place"
+
+    confidence = max(0.0, min(0.99, 0.45 + positive * 0.08 - negative * 0.1 + (0.05 if entity_kind == "one_off_event" else 0.0)))
+
+    entity = {
+        "name": name_guess,
+        "entity_kind": entity_kind,
+        "homepage": homepage,
+        "events_url": _pick_events_url(bundle),
+        "borough": inferred_borough,
+        "category": _infer_category(blob, entity_kind=entity_kind),
+        "description": _clean_text(bundle.get("meta_description")) or None,
+        "confidence": confidence,
+        "reason_codes": reason_codes,
+    }
+
+    margin = positive - negative
+    if margin >= 4 and confidence >= 0.7 and _is_valid_entity_name(entity.get("name")):
+        return {"decision": "accept", "entity": entity, "reason_codes": reason_codes}
+    if margin <= -1:
+        return {"decision": "reject", "reason_codes": reason_codes}
+    return {"decision": "ambiguous", "entity": entity, "reason_codes": reason_codes}
+
+
+def _domain_fingerprint(bundle: dict[str, Any]) -> str:
+    payload = {
+        "domain": bundle.get("domain"),
+        "title": bundle.get("title"),
+        "meta_description": bundle.get("meta_description"),
+        "h1": bundle.get("h1"),
+        "headings": bundle.get("headings", [])[:15],
+        "nav_terms": bundle.get("nav_terms", [])[:20],
+        "jsonld_types": bundle.get("jsonld_types", [])[:20],
+        "events_link_candidates": bundle.get("events_link_candidates", [])[:8],
+    }
+    return _hash_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _classify_site_bundles_with_llm(
+    bundles: list[dict[str, Any]],
+    *,
+    timeout: int,
+    batch_size: int,
+) -> tuple[dict[str, dict[str, Any]], int, int]:
+    if not bundles:
+        return {}, 0, 0
+    if not _clean_text(os.getenv("OPENAI_API_KEY")):
+        return {}, 0, 0
+
+    model = _clean_text(os.getenv("DISCOVERY_OPENAI_MODEL") or "gpt-5-mini")
+    results: dict[str, dict[str, Any]] = {}
+    calls = 0
+    tokens_total = 0
+
+    system_prompt = (
+        "You classify compact site bundles into valid London entities. "
+        "Return strict JSON object: {\"items\": [{\"domain\": str, \"is_entity\": bool, "
+        "\"entity_kind\": \"place\"|\"one_off_event\"|\"reject\", \"name\": str|null, "
+        "\"homepage\": str|null, \"events_url\": str|null, \"borough\": str|null, \"category\": str|null, "
+        "\"description\": str|null, \"confidence\": number, \"reason_codes\": [str]}]}. "
+        "Exclusions (never entity): aggregators/listicles/marketplaces/directories/social networks/publishers/ticket pages. "
+        "A place is a recurring London venue/institution/organizer with a real-world presence. "
+        "one_off_event is a major standalone event series or annual event with official landing page."
+    )
+
+    for start in range(0, len(bundles), max(1, batch_size)):
+        batch = bundles[start : start + max(1, batch_size)]
+        user_payload = {
+            "bundles": [
+                {
+                    "domain": item.get("domain"),
+                    "homepage": item.get("homepage"),
+                    "sample_urls": item.get("sample_urls", [])[:4],
+                    "title": item.get("title"),
+                    "meta_description": item.get("meta_description"),
+                    "h1": item.get("h1"),
+                    "headings": item.get("headings", [])[:14],
+                    "nav_terms": item.get("nav_terms", [])[:18],
+                    "footer_snippet": item.get("footer_snippet", "")[:220],
+                    "jsonld_types": item.get("jsonld_types", [])[:20],
+                    "address_snippets": item.get("address_snippets", [])[:6],
+                    "events_link_candidates": item.get("events_link_candidates", [])[:8],
+                    "text_preview": item.get("text_preview", "")[:900],
+                    "seed_name_hints": item.get("seed_name_hints", [])[:5],
+                }
+                for item in batch
+            ]
+        }
+
+        try:
+            parsed, tokens = _openai_request_json(
+                system_prompt=system_prompt,
+                user_payload=user_payload,
+                max_output_tokens=3200,
+                timeout=timeout,
+                model=model,
+            )
+            calls += 1
+            tokens_total += tokens
+        except Exception:
+            continue
+
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
+            retry_prompt = system_prompt + " Output must be JSON only and parseable."
+            try:
+                parsed, retry_tokens = _openai_request_json(
+                    system_prompt=retry_prompt,
+                    user_payload=user_payload,
+                    max_output_tokens=3200,
+                    timeout=timeout,
+                    model=model,
+                )
+                calls += 1
+                tokens_total += retry_tokens
+            except Exception:
+                continue
+
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
+            continue
+
+        for item in parsed.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            domain = str(item.get("domain") or "").strip().lower().replace("www.", "")
+            if not domain:
+                continue
+            kind = _normalize_token(item.get("entity_kind")).replace(" ", "_")
+            if kind not in {"place", "one_off_event", "reject"}:
+                kind = "reject"
+            results[domain] = {
+                "is_entity": bool(item.get("is_entity", False)),
+                "entity_kind": kind,
+                "name": _clean_text(item.get("name")) or None,
+                "homepage": _canonicalize_url(item.get("homepage"), include_path=False) or _normalize_homepage(item.get("homepage")),
+                "events_url": _canonicalize_url(item.get("events_url")) if item.get("events_url") else None,
+                "borough": _clean_text(item.get("borough")) or None,
+                "category": _clean_text(item.get("category")) or None,
+                "description": _clean_text(item.get("description")) or None,
+                "confidence": float(item.get("confidence") or 0),
+                "reason_codes": [
+                    _clean_text(code)
+                    for code in (item.get("reason_codes") or [])
+                    if _clean_text(code)
+                ][:10],
+            }
+
+    return results, calls, tokens_total
+
+
+def _normalize_borough(value: str | None) -> str | None:
+    clean = _clean_text(value)
+    if not clean:
         return None
-    if not _is_valid_org_name(name):
+    for borough in BOROUGHS:
+        if _normalize_token(clean) == _normalize_token(borough):
+            return borough
+        for alias in BOROUGH_ALIASES.get(borough.lower(), []):
+            if _normalize_token(clean) == _normalize_token(alias):
+                return borough
+    return None
+
+
+def _finalize_entity_record(
+    *,
+    bundle: dict[str, Any],
+    entity: dict[str, Any],
+    default_source: str,
+) -> dict[str, Any] | None:
+    name = _clean_text(entity.get("name")) or _guess_name_from_bundle(bundle)
+    if not _is_valid_entity_name(name):
         return None
 
-    homepage = _normalize_homepage(response.url)
-    events_url = _extract_events_url(response.url, soup)
-    borough = _infer_borough(text_blob)
-    category_blob = _clean_text(" ".join([name, title, description, response.url, page_text[:2000]]))
-    category = _infer_category(category_blob)
+    entity_kind = _normalize_token(entity.get("entity_kind")).replace(" ", "_")
+    if entity_kind not in {"place", "one_off_event"}:
+        entity_kind = "place"
 
-    article_like = _looks_like_article_or_listicle(response.url, title, description, page_text)
-    program_like = _looks_like_program_page(response.url, title, name)
-    domain_match = _name_matches_domain(name, response.url)
-    has_schema = _has_org_schema_markup(soup)
-    has_institution_keyword = _contains_institution_keyword(" ".join([name, title, description, page_text[:2000]]))
-
-    if _looks_like_non_cultural_academic(name, text_blob):
-        return None
-    if not has_institution_keyword and not (has_schema and domain_match):
-        return None
-    if article_like:
-        return None
-    if program_like:
-        return None
-    if _is_event_detail_path(urlparse(response.url).path):
+    homepage = (
+        _canonicalize_url(entity.get("homepage"), include_path=False)
+        or _normalize_homepage(bundle.get("homepage") or bundle.get("sample_urls", [""])[0])
+        or _normalize_homepage(f"https://{bundle.get('domain')}")
+    )
+    if not homepage:
         return None
 
+    events_url = _canonicalize_url(entity.get("events_url")) or _pick_events_url(bundle) or homepage
+
+    blob = " ".join(
+        [
+            _clean_text(bundle.get("title")),
+            _clean_text(bundle.get("meta_description")),
+            _clean_text(bundle.get("h1")),
+            " ".join(bundle.get("headings", [])[:12]),
+            " ".join(bundle.get("nav_terms", [])[:12]),
+        ]
+    )
+
+    borough = _normalize_borough(entity.get("borough")) or _infer_borough(blob)
+
+    category_raw = _clean_text(entity.get("category"))
+    category = (
+        "one-off event"
+        if entity_kind == "one_off_event"
+        else (category_raw if category_raw else _infer_category(blob, entity_kind=entity_kind))
+    )
+
+    description = _clean_text(entity.get("description"))
     if not description:
-        if page_text:
-            description = _clean_text(page_text[:220])
+        if entity_kind == "one_off_event":
+            description = f"{name} is a major London one-off event source."
+        elif borough:
+            description = f"{name} is a London cultural place in {borough}."
+        else:
+            description = f"{name} is a London cultural place."
 
-    if not description:
-        description = f"{name} is a London cultural venue."
+    confidence = float(entity.get("confidence") or 0)
+    source = "auto_discovery_one_off" if entity_kind == "one_off_event" else default_source
 
     return {
         "name": name,
@@ -1174,291 +2086,27 @@ def _extract_org_candidate(url: str, timeout: int) -> dict[str, Any] | None:
         "description": description,
         "borough": borough,
         "category": category,
-        "source": "auto_discovery",
+        "source": source,
+        "entity_kind": entity_kind,
+        "confidence": max(0.0, min(1.0, confidence)),
     }
 
 
-def generate_queries(boroughs=None, categories=None):
-    """Generate grid + aggregator queries."""
-    boroughs = boroughs or BOROUGHS
-    categories = categories or CATEGORIES
-
-    queries = []
-
-    for borough in boroughs:
-        for category in categories:
-            queries.append(
-                {
-                    "query": f"{category} {borough} London events",
-                    "borough": borough,
-                    "category": category,
-                    "source": "borough_search",
-                }
-            )
-
-    for q in AGGREGATOR_QUERIES:
-        queries.append(
-            {
-                "query": q,
-                "borough": None,
-                "category": None,
-                "source": "aggregator_search",
-            }
-        )
-
-    return queries
-
-
-def _build_discovery_queries(max_queries: int, boroughs=None, categories=None) -> list[dict[str, Any]]:
-    active_strategies = [item for item in get_strategies() if item.get("active")]
-
-    def _is_low_signal_phrase(value: str) -> bool:
-        normalized = _normalize_token(value)
-        if not normalized:
-            return True
-        if normalized in LOW_SIGNAL_STRATEGY_PHRASES:
-            return True
-        if _looks_like_program_text(value) or _looks_like_article_title(value):
-            return True
-        return _word_count(value) < 2
-
-    def _extract_quoted_phrases(value: str) -> list[str]:
-        results: list[str] = []
-        seen: set[str] = set()
-        for groups in re.findall(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'', value):
-            phrase = _clean_text(next((part for part in groups if part), ""))
-            if len(phrase) < 3:
-                continue
-            if _is_low_signal_phrase(phrase):
-                continue
-            key = phrase.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(phrase)
-        return results
-
-    def _center_variants(value: str) -> list[str]:
-        variants = {_clean_text(value)}
-        replacements = (
-            ("centers", "centres"),
-            ("center", "centre"),
-            ("centres", "centers"),
-            ("centre", "center"),
-        )
-        for old, new in replacements:
-            if re.search(rf"\b{old}\b", value, flags=re.IGNORECASE):
-                variants.add(re.sub(rf"\b{old}\b", new, value, flags=re.IGNORECASE))
-        out = []
-        for item in variants:
-            clean = _clean_text(item)
-            if not clean:
-                continue
-            if _word_count(clean) > 7:
-                continue
-            if _looks_like_program_text(clean):
-                continue
-            out.append(clean)
-        return out
-
-    def _dedupe_pool(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for item in items:
-            query = _clean_text(item.get("query"))
-            if not query:
-                continue
-            key = query.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append({**item, "query": query})
-        return out
-
-    def _has_country_focus_hint(value: str) -> bool:
-        lower = _normalize_token(value)
-        hints = (
-            "country cultural",
-            "cultural center",
-            "cultural centre",
-            "cultural institute",
-            "japan house",
-            "korean cultural",
-            "country focused",
-        )
-        return any(hint in lower for hint in hints)
-
-    def _country_focus_queries(strategy_id: int) -> list[dict[str, Any]]:
-        queries: list[dict[str, Any]] = [
-            {
-                "query": "country cultural centres in London",
-                "source": "strategy_country",
-                "strategy_id": strategy_id,
-            },
-            {
-                "query": "national cultural institutes in London",
-                "source": "strategy_country",
-                "strategy_id": strategy_id,
-            },
-            {
-                "query": "country themed cultural houses in London",
-                "source": "strategy_country",
-                "strategy_id": strategy_id,
-            },
-        ]
-        for term in COUNTRY_FOCUS_TERMS:
-            queries.extend(
-                [
-                    {
-                        "query": f"{term} cultural centre London",
-                        "source": "strategy_country",
-                        "strategy_id": strategy_id,
-                    },
-                    {
-                        "query": f"{term} cultural center London",
-                        "source": "strategy_country",
-                        "strategy_id": strategy_id,
-                    },
-                ]
-            )
-        return queries
-
-    strategy_pools: list[list[dict[str, Any]]] = []
-    for strategy in active_strategies:
-        text_value = _clean_text(strategy.get("text"))
-        if not text_value:
+def _dedupe_records(records: list[dict[str, Any]], max_items: int) -> list[dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    for record in records:
+        domain = _domain(record.get("homepage") or record.get("events_url"))
+        name_key = _normalize_name(record.get("name"))
+        if not domain or not name_key:
             continue
+        key = f"{domain}|{name_key}"
+        existing = by_key.get(key)
+        if not existing or float(record.get("confidence") or 0) > float(existing.get("confidence") or 0):
+            by_key[key] = record
 
-        strategy_id = int(strategy["id"])
-        strategy_queries: list[dict[str, Any]] = []
-
-        # Prioritise quoted entities first (e.g. "Japan House").
-        for phrase in _extract_quoted_phrases(text_value):
-            strategy_queries.extend(
-                [
-                    {
-                        "query": f"{phrase} London cultural centre",
-                        "source": "strategy_phrase",
-                        "strategy_id": strategy_id,
-                    },
-                    {
-                        "query": f"{phrase} London cultural center",
-                        "source": "strategy_phrase",
-                        "strategy_id": strategy_id,
-                    },
-                    {
-                        "query": f"{phrase} London events programme",
-                        "source": "strategy_phrase",
-                        "strategy_id": strategy_id,
-                    },
-                ]
-            )
-
-        for variant in _center_variants(text_value):
-            if _is_low_signal_phrase(variant):
-                continue
-            strategy_queries.append(
-                {
-                    "query": f"{variant} London cultural venue",
-                    "source": "strategy",
-                    "strategy_id": strategy_id,
-                }
-            )
-
-        if _has_country_focus_hint(text_value):
-            strategy_queries.extend(_country_focus_queries(strategy_id))
-
-        strategy_queries = _dedupe_pool(strategy_queries)
-        if strategy_queries:
-            strategy_pools.append(strategy_queries)
-
-    strategy_pool: list[dict[str, Any]] = []
-    strategy_positions = [0 for _ in strategy_pools]
-    while strategy_pools:
-        progressed = False
-        for idx, pool in enumerate(strategy_pools):
-            position = strategy_positions[idx]
-            if position >= len(pool):
-                continue
-            strategy_pool.append(pool[position])
-            strategy_positions[idx] += 1
-            progressed = True
-        if not progressed:
-            break
-
-    strategy_pool = _dedupe_pool(strategy_pool)
-    aggregator_pool = _dedupe_pool([{"query": q, "source": "aggregator"} for q in AGGREGATOR_QUERIES])
-
-    grid_pool: list[dict[str, Any]] = []
-    grid = [item for item in generate_queries(boroughs=boroughs, categories=categories) if item.get("source") == "borough_search"]
-    if grid:
-        start = date.today().toordinal() % len(grid)
-        rotate_count = min(len(grid), max_queries * 4)
-        for idx in range(rotate_count):
-            grid_pool.append(grid[(start + idx) % len(grid)])
-    grid_pool = _dedupe_pool(grid_pool)
-
-    selected: list[dict[str, Any]] = []
-    selected_keys: set[str] = set()
-
-    strategy_idx = 0
-    grid_idx = 0
-    aggregator_idx = 0
-
-    def _add_from_pool(pool: list[dict[str, Any]], idx: int, target_count: int) -> int:
-        added = 0
-        while idx < len(pool) and added < target_count and len(selected) < max_queries:
-            item = pool[idx]
-            idx += 1
-            key = item["query"].lower()
-            if key in selected_keys:
-                continue
-            selected.append(item)
-            selected_keys.add(key)
-            added += 1
-        return idx
-
-    floor_strategy = 0
-    if strategy_pool:
-        if max_queries >= 10:
-            floor_strategy = 4
-        elif max_queries >= 8:
-            floor_strategy = 3
-        elif max_queries >= 4:
-            floor_strategy = 2
-        else:
-            floor_strategy = 1
-
-    floor_grid = 1 if grid_pool and max_queries >= 6 else (1 if grid_pool and max_queries >= 3 else 0)
-    floor_aggregator = 1 if aggregator_pool and max_queries >= 8 else 0
-
-    while floor_strategy + floor_grid + floor_aggregator > max_queries:
-        if floor_aggregator > 0:
-            floor_aggregator -= 1
-        elif floor_grid > 0:
-            floor_grid -= 1
-        elif floor_strategy > 0:
-            floor_strategy -= 1
-        else:
-            break
-
-    strategy_idx = _add_from_pool(strategy_pool, strategy_idx, floor_strategy)
-    grid_idx = _add_from_pool(grid_pool, grid_idx, floor_grid)
-    aggregator_idx = _add_from_pool(aggregator_pool, aggregator_idx, floor_aggregator)
-
-    while len(selected) < max_queries:
-        before = len(selected)
-        strategy_idx = _add_from_pool(strategy_pool, strategy_idx, 1)
-        if len(selected) >= max_queries:
-            break
-        aggregator_idx = _add_from_pool(aggregator_pool, aggregator_idx, 1)
-        if len(selected) >= max_queries:
-            break
-        grid_idx = _add_from_pool(grid_pool, grid_idx, 1)
-        if len(selected) == before:
-            break
-
-    return selected[:max_queries]
+    out = list(by_key.values())
+    out.sort(key=lambda item: (-float(item.get("confidence") or 0), _clean_text(item.get("name")).lower()))
+    return out[:max_items]
 
 
 def import_from_file(filepath):
@@ -1497,39 +2145,6 @@ def print_queries(queries):
         print(f"{idx:4d}. [{item.get('source', 'query')}] {item.get('query')}")
 
 
-def _env_int(key: str, fallback: int) -> int:
-    raw = str(os.getenv(key, str(fallback))).strip()
-    try:
-        parsed = int(raw)
-        return parsed if parsed > 0 else fallback
-    except Exception:
-        return fallback
-
-
-def _env_bool(key: str, fallback: bool) -> bool:
-    raw = str(os.getenv(key, "1" if fallback else "0")).strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return fallback
-
-
-def _parse_discovery_dt(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    if isinstance(value, date):
-        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
-    if isinstance(value, str) and value:
-        normalized = value.replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(normalized)
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        except Exception:
-            return None
-    return None
-
-
 def run_discovery_cycle(
     *,
     trigger: str = "scheduled",
@@ -1542,17 +2157,25 @@ def run_discovery_cycle(
     category: str | None = None,
     search_provider: str | None = None,
 ) -> dict[str, Any]:
-    """Run one full discovery cycle and upsert discovered organisations."""
+    """Run one full discovery cycle and upsert discovered entities."""
 
     init_db()
 
-    max_queries = max_queries or _env_int("DISCOVERY_MAX_QUERIES", 16)
+    max_queries = max_queries or _env_int("DISCOVERY_MAX_QUERIES", 72)
+    max_queries = max(10, min(120, max_queries))
+
     max_results_per_query = max_results_per_query or _env_int("DISCOVERY_MAX_RESULTS_PER_QUERY", 8)
-    max_candidates = max_candidates or _env_int("DISCOVERY_MAX_CANDIDATES", 60)
+    max_candidates = max_candidates or _env_int("DISCOVERY_MAX_CANDIDATES", 320)
     request_timeout = request_timeout or _env_int("DISCOVERY_REQUEST_TIMEOUT", 12)
+
     max_urls_per_domain = _env_int("DISCOVERY_MAX_URLS_PER_DOMAIN", 3)
+    max_lead_pages = _env_int("DISCOVERY_MAX_LEAD_PAGES", 36)
+    max_resolved_from_leads = _env_int("DISCOVERY_MAX_RESOLVED_FROM_LEADS", max_candidates)
+    llm_batch_size = _env_int("DISCOVERY_LLM_BATCH_SIZE", 12)
+
     lock_window_minutes = _env_int("DISCOVERY_RUN_LOCK_MINUTES", 90)
     manual_unlock_minutes = _env_int("DISCOVERY_MANUAL_UNLOCK_MINUTES", 5)
+
     search_provider = _clean_text(search_provider or os.getenv("DISCOVERY_SEARCH_PROVIDER") or "duckduckgo")
 
     running = get_latest_running_discovery_run()
@@ -1605,7 +2228,7 @@ def run_discovery_cycle(
 
     boroughs = [borough] if borough else None
     categories = [category] if category else None
-    queries = _build_discovery_queries(max_queries=max_queries, boroughs=boroughs, categories=categories)
+    queries, query_meta = _build_discovery_queries(max_queries=max_queries, boroughs=boroughs, categories=categories)
 
     run_id = start_discovery_run(
         query_count=len(queries),
@@ -1616,115 +2239,280 @@ def run_discovery_cycle(
             "max_candidates": max_candidates,
             "request_timeout": request_timeout,
             "max_urls_per_domain": max_urls_per_domain,
+            "max_lead_pages": max_lead_pages,
+            "max_resolved_from_leads": max_resolved_from_leads,
+            "llm_batch_size": llm_batch_size,
             "dry_run": dry_run,
             "search_provider": search_provider,
         },
     )
 
     query_errors = 0
-    searched_urls: list[str] = []
-    aggregator_seed_urls: list[str] = []
     query_debug: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
-    domain_counts: dict[str, int] = {}
+    metrics: dict[str, int] = {
+        "llm_calls": int(query_meta.get("llm_calls") or 0),
+        "llm_tokens": int(query_meta.get("llm_tokens") or 0),
+    }
+
+    all_result_urls: set[str] = set()
+    direct_seed_urls: list[str] = []
+    lead_urls: list[str] = []
+    seen_seed: set[str] = set()
 
     try:
         for item in queries:
-            query = item["query"]
+            query = _clean_text(item.get("query"))
+            if not query:
+                continue
+
             try:
-                results = _search_web(
-                    query=query,
+                urls = _cached_serp_search(
+                    query,
                     max_results=max_results_per_query,
                     timeout=request_timeout,
                     provider=search_provider,
+                    metrics=metrics,
                 )
             except Exception:
                 query_errors += 1
                 continue
 
             accepted_count = 0
-            debug_entry = None
-            if len(query_debug) < 12:
-                debug_entry = {
-                    "query": query,
-                    "result_count": len(results),
-                    "accepted_url_count": 0,
-                    "sample_urls": results[:3],
-                }
-                query_debug.append(debug_entry)
+            if len(query_debug) < 24:
+                query_debug.append(
+                    {
+                        "query": query,
+                        "result_count": len(urls),
+                        "accepted_url_count": 0,
+                        "sample_urls": urls[:3],
+                    }
+                )
 
-            for url in results:
-                if _should_skip_url(url):
+            for raw_url in urls:
+                canonical = _canonicalize_url(raw_url)
+                if not canonical:
                     continue
-                if not _seed_url_is_likely_org_entry(url):
+                if canonical in all_result_urls:
                     continue
-                key = url.lower().strip()
-                if key in seen_urls:
+                all_result_urls.add(canonical)
+
+                if _is_search_ignored_url(canonical):
                     continue
-                domain = _domain(url)
-                if not domain:
+
+                if canonical in seen_seed:
                     continue
-                if domain_counts.get(domain, 0) >= max_urls_per_domain:
-                    continue
-                seen_urls.add(key)
-                domain_counts[domain] = domain_counts.get(domain, 0) + 1
-                if domain in AGGREGATOR_SOURCE_DOMAINS:
-                    aggregator_seed_urls.append(url)
+                seen_seed.add(canonical)
+
+                if _is_lead_source_url(canonical):
+                    lead_urls.append(canonical)
                 else:
-                    searched_urls.append(url)
+                    direct_seed_urls.append(canonical)
                 accepted_count += 1
 
-            if debug_entry is not None:
-                debug_entry["accepted_url_count"] = accepted_count
-
-            if len(searched_urls) >= max_candidates * 2:
-                break
-
-        for seed_url in aggregator_seed_urls:
-            if len(searched_urls) >= max_candidates * 2:
-                break
-
-            try:
-                expanded = _expand_from_aggregator(seed_url, timeout=request_timeout, max_results=max_results_per_query * 5)
-            except Exception:
-                continue
-
-            for url in expanded:
-                if _should_skip_url(url):
-                    continue
-                if not _seed_url_is_likely_org_entry(url):
-                    continue
-                key = url.lower().strip()
-                if key in seen_urls:
-                    continue
-                domain = _domain(url)
-                if not domain:
-                    continue
-                if domain_counts.get(domain, 0) >= max_urls_per_domain:
-                    continue
-
-                seen_urls.add(key)
-                domain_counts[domain] = domain_counts.get(domain, 0) + 1
-                searched_urls.append(url)
-
-                if len(searched_urls) >= max_candidates * 2:
+                if len(direct_seed_urls) + len(lead_urls) >= max_candidates * 6:
                     break
 
-        candidates: list[dict[str, Any]] = []
-        for url in searched_urls:
-            if len(candidates) >= max_candidates:
+            if query_debug:
+                query_debug[-1]["accepted_url_count"] = accepted_count
+
+            if len(direct_seed_urls) + len(lead_urls) >= max_candidates * 6:
                 break
+
+        lead_urls = lead_urls[:max_lead_pages]
+
+        lead_bundles: list[dict[str, Any]] = []
+        for url in lead_urls:
             try:
-                candidate = _extract_org_candidate(url=url, timeout=request_timeout)
+                bundle = _fetch_page_bundle(url, timeout=request_timeout, metrics=metrics)
             except Exception:
                 continue
-            if not candidate:
+            if not bundle:
                 continue
-            candidates.append(candidate)
+            lead_bundles.append(bundle)
+
+        lead_candidates = _extract_entities_from_leads(
+            lead_bundles,
+            timeout=_env_int("DISCOVERY_LLM_TIMEOUT", 25),
+            llm_batch_size=llm_batch_size,
+            metrics=metrics,
+        )
+
+        resolved_from_leads = _resolve_lead_candidates_to_urls(
+            lead_candidates,
+            max_results_per_query=max_results_per_query,
+            timeout=request_timeout,
+            provider=search_provider,
+            max_candidates=max_resolved_from_leads,
+            metrics=metrics,
+        )
+
+        for resolved in resolved_from_leads:
+            url_value = _canonicalize_url(resolved.get("url"))
+            if not url_value:
+                continue
+            if url_value in seen_seed:
+                continue
+            seen_seed.add(url_value)
+            direct_seed_urls.append(url_value)
+
+        domain_map: dict[str, dict[str, Any]] = {}
+        for url in direct_seed_urls:
+            domain = _domain(url)
+            if not domain:
+                continue
+            if _domain_matches_suffix(domain, REJECT_ENTITY_DOMAIN_SUFFIXES):
+                continue
+
+            bucket = domain_map.setdefault(
+                domain,
+                {
+                    "seed_urls": [],
+                    "seed_url_set": set(),
+                    "seed_name_hints": [],
+                },
+            )
+            if url not in bucket["seed_url_set"]:
+                bucket["seed_url_set"].add(url)
+                bucket["seed_urls"].append(url)
+
+        for resolved in resolved_from_leads:
+            url_value = _canonicalize_url(resolved.get("url"))
+            domain = _domain(url_value)
+            if not url_value or not domain:
+                continue
+            if domain not in domain_map:
+                continue
+            seed_name = _clean_text(resolved.get("seed_name"))
+            if seed_name and seed_name not in domain_map[domain]["seed_name_hints"]:
+                domain_map[domain]["seed_name_hints"].append(seed_name)
+
+        ranked_domains = sorted(
+            domain_map.items(),
+            key=lambda kv: (-len(kv[1].get("seed_urls", [])), kv[0]),
+        )
+
+        site_bundles: list[dict[str, Any]] = []
+        for domain, payload in ranked_domains:
+            if len(site_bundles) >= max_candidates:
+                break
+            try:
+                site_bundle = _build_domain_bundle(
+                    domain=domain,
+                    seed_urls=payload.get("seed_urls", [])[: max(1, max_urls_per_domain * 3)],
+                    timeout=request_timeout,
+                    max_urls_per_domain=max_urls_per_domain,
+                    metrics=metrics,
+                )
+            except Exception:
+                continue
+            if not site_bundle:
+                continue
+            site_bundle["seed_name_hints"] = payload.get("seed_name_hints", [])[:6]
+            site_bundles.append(site_bundle)
+
+        heuristic_accept_count = 0
+        llm_accept_count = 0
+        rejected_count = 0
+        manual_review_count = 0
+
+        accepted_records: list[dict[str, Any]] = []
+        ambiguous_for_llm: list[dict[str, Any]] = []
+
+        for bundle in site_bundles:
+            gate = _heuristic_gate(bundle)
+            decision = gate.get("decision")
+
+            if decision == "reject":
+                rejected_count += 1
+                continue
+
+            if decision == "accept":
+                finalized = _finalize_entity_record(
+                    bundle=bundle,
+                    entity=gate.get("entity") or {},
+                    default_source="auto_discovery",
+                )
+                if finalized:
+                    accepted_records.append(finalized)
+                    heuristic_accept_count += 1
+                else:
+                    manual_review_count += 1
+                continue
+
+            fingerprint = _domain_fingerprint(bundle)
+            cache_key = _cache_key("classify", bundle.get("domain"), fingerprint)
+            cached = get_cached_value(cache_key)
+            if isinstance(cached, dict):
+                is_entity = bool(cached.get("is_entity"))
+                kind = _normalize_token(cached.get("entity_kind")).replace(" ", "_")
+                if is_entity and kind in {"place", "one_off_event"}:
+                    finalized = _finalize_entity_record(
+                        bundle=bundle,
+                        entity=cached,
+                        default_source="auto_discovery",
+                    )
+                    if finalized and float(cached.get("confidence") or 0) >= 0.5:
+                        accepted_records.append(finalized)
+                        llm_accept_count += 1
+                    else:
+                        manual_review_count += 1
+                else:
+                    rejected_count += 1
+                continue
+
+            ambiguous_for_llm.append({"bundle": bundle, "cache_key": cache_key})
+
+        if ambiguous_for_llm:
+            llm_inputs = [item["bundle"] for item in ambiguous_for_llm]
+            llm_results, llm_calls, llm_tokens = _classify_site_bundles_with_llm(
+                llm_inputs,
+                timeout=_env_int("DISCOVERY_LLM_TIMEOUT", 25),
+                batch_size=llm_batch_size,
+            )
+            metrics["llm_calls"] = metrics.get("llm_calls", 0) + llm_calls
+            metrics["llm_tokens"] = metrics.get("llm_tokens", 0) + llm_tokens
+
+            for wrapped in ambiguous_for_llm:
+                bundle = wrapped["bundle"]
+                cache_key = wrapped["cache_key"]
+                domain = str(bundle.get("domain") or "").lower()
+
+                result = llm_results.get(domain)
+                if result is None:
+                    manual_review_count += 1
+                    continue
+
+                set_cached_value(cache_key, result, ttl_days=LLM_CLASSIFY_CACHE_TTL_DAYS)
+
+                is_entity = bool(result.get("is_entity"))
+                kind = _normalize_token(result.get("entity_kind")).replace(" ", "_")
+                confidence = float(result.get("confidence") or 0)
+
+                if not is_entity or kind not in {"place", "one_off_event"}:
+                    rejected_count += 1
+                    continue
+
+                finalized = _finalize_entity_record(
+                    bundle=bundle,
+                    entity=result,
+                    default_source="auto_discovery",
+                )
+                if not finalized:
+                    manual_review_count += 1
+                    continue
+
+                if confidence < 0.5:
+                    manual_review_count += 1
+                    continue
+
+                accepted_records.append(finalized)
+                llm_accept_count += 1
+
+        final_records = _dedupe_records(accepted_records, max_items=max_candidates)
 
         upserted_count = 0
         if not dry_run:
-            for item in candidates:
+            for item in final_records:
                 try:
                     upsert_org(
                         name=item.get("name"),
@@ -1739,23 +2527,54 @@ def run_discovery_cycle(
                 except Exception:
                     continue
 
+        place_count = sum(1 for item in final_records if item.get("entity_kind") == "place")
+        one_off_count = sum(1 for item in final_records if item.get("entity_kind") == "one_off_event")
+
+        llm_calls_total = int(metrics.get("llm_calls", 0))
+        llm_tokens_total = int(metrics.get("llm_tokens", 0))
+
         summary = {
             "run_id": run_id,
             "status": "success",
             "query_count": len(queries),
             "query_errors": query_errors,
-            "searched_url_count": len(searched_urls),
-            "candidate_count": len(candidates),
+            "searched_url_count": len(all_result_urls),
+            "lead_url_count": len(lead_urls),
+            "lead_candidate_name_count": len(lead_candidates),
+            "lead_resolved_count": len(resolved_from_leads),
+            "domain_count": len(site_bundles),
+            "candidate_count": len(final_records),
+            "place_count": place_count,
+            "one_off_event_count": one_off_count,
             "upserted_count": upserted_count,
+            "rejected_count": rejected_count,
+            "manual_review_count": manual_review_count,
+            "heuristic_accept_count": heuristic_accept_count,
+            "llm_accept_count": llm_accept_count,
+            "accept_rate": round((len(final_records) / len(site_bundles)) if site_bundles else 0.0, 4),
+            "llm_calls": llm_calls_total,
+            "llm_tokens": llm_tokens_total,
+            "avg_tokens": round((llm_tokens_total / llm_calls_total), 2) if llm_calls_total else 0.0,
+            "query_generation_cache_hit": bool(query_meta.get("cache_hit")),
+            "strategy_count": int(query_meta.get("strategy_count") or 0),
             "dry_run": dry_run,
-            "search_provider": search_provider,
+            "search_provider": "duckduckgo",
             "max_urls_per_domain": max_urls_per_domain,
+            "cache_metrics": {
+                "serp_cache_hits": metrics.get("serp_cache_hits", 0),
+                "serp_cache_misses": metrics.get("serp_cache_misses", 0),
+                "bundle_cache_hits": metrics.get("bundle_cache_hits", 0),
+                "bundle_cache_misses": metrics.get("bundle_cache_misses", 0),
+                "lead_extract_cache_hits": metrics.get("lead_extract_cache_hits", 0),
+                "lead_extract_cache_misses": metrics.get("lead_extract_cache_misses", 0),
+            },
             "query_debug": query_debug,
         }
+
         finish_discovery_run(
             run_id,
             status="success",
-            result_count=len(candidates),
+            result_count=len(final_records),
             upserted_count=upserted_count,
             details=summary,
         )
@@ -1805,7 +2624,7 @@ def main():
     boroughs = [args.borough] if args.borough else None
     categories = [args.category] if args.category else None
 
-    queries = _build_discovery_queries(max_queries=args.max_queries or _env_int("DISCOVERY_MAX_QUERIES", 16), boroughs=boroughs, categories=categories)
+    queries, _ = _build_discovery_queries(max_queries=args.max_queries or _env_int("DISCOVERY_MAX_QUERIES", 72), boroughs=boroughs, categories=categories)
 
     if args.print_queries:
         print_queries(queries)

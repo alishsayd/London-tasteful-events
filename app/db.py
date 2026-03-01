@@ -573,6 +573,19 @@ def init_db() -> None:
             )
         )
 
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS discovery_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    expires_at TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+
         if IS_POSTGRES:
             conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS trigger TEXT NOT NULL DEFAULT 'scheduled'"))
             conn.execute(text("ALTER TABLE discovery_runs ADD COLUMN IF NOT EXISTS details_json TEXT"))
@@ -598,6 +611,7 @@ def init_db() -> None:
 
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_discovery_runs_started_at ON discovery_runs(started_at DESC)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_discovery_runs_status ON discovery_runs(status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_discovery_cache_expires_at ON discovery_cache(expires_at)"))
 
         # Legacy migration: keep previously logged strategy notes.
         try:
@@ -1162,6 +1176,88 @@ def finish_discovery_run(
                 """
             ),
             params,
+        )
+
+
+def get_cached_value(cache_key: str) -> Any | None:
+    key = str(cache_key or "").strip()
+    if not key:
+        return None
+
+    with get_db() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT value_json, expires_at
+                FROM discovery_cache
+                WHERE cache_key = :cache_key
+                LIMIT 1
+                """
+            ),
+            {"cache_key": key},
+        ).mappings().first()
+
+    if not row:
+        return None
+
+    expires_at = _as_datetime(row.get("expires_at"))
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and datetime.now(timezone.utc) >= expires_at:
+        with get_db() as conn:
+            conn.execute(text("DELETE FROM discovery_cache WHERE cache_key = :cache_key"), {"cache_key": key})
+        return None
+
+    raw_value = row.get("value_json")
+    if not isinstance(raw_value, str) or not raw_value.strip():
+        return None
+
+    try:
+        return json.loads(raw_value)
+    except Exception:
+        return None
+
+
+def set_cached_value(
+    cache_key: str,
+    value: Any,
+    *,
+    ttl_days: int | None = None,
+    ttl_seconds: int | None = None,
+) -> None:
+    key = str(cache_key or "").strip()
+    if not key:
+        return
+
+    now = datetime.now(timezone.utc)
+    expires_at = None
+    if ttl_seconds is not None:
+        ttl = max(0, int(ttl_seconds))
+        expires_at = now + timedelta(seconds=ttl) if ttl > 0 else now
+    elif ttl_days is not None:
+        ttl = max(0, int(ttl_days))
+        expires_at = now + timedelta(days=ttl) if ttl > 0 else now
+
+    payload = json.dumps(value, ensure_ascii=False)
+
+    with get_db() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO discovery_cache (cache_key, value_json, expires_at, updated_at)
+                VALUES (:cache_key, :value_json, :expires_at, CURRENT_TIMESTAMP)
+                ON CONFLICT (cache_key)
+                DO UPDATE SET
+                    value_json = excluded.value_json,
+                    expires_at = excluded.expires_at,
+                    updated_at = CURRENT_TIMESTAMP
+                """
+            ),
+            {
+                "cache_key": key,
+                "value_json": payload,
+                "expires_at": expires_at,
+            },
         )
 
 
