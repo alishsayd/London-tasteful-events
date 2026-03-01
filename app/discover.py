@@ -417,6 +417,37 @@ CATEGORY_MAP = {
     "one-off event": ["festival", "5k", "10k", "marathon", "fair", "biennale", "expo"],
 }
 
+CATEGORY_CANONICAL_MAP = {
+    "lecture series": "Education",
+    "lecture venue": "Education",
+    "education": "Education",
+    "community cinema": "Cinema",
+    "cinema": "Cinema",
+    "bookshop": "Bookshops",
+    "bookshop events": "Bookshops",
+    "bookshops": "Bookshops",
+    "social community center": "Cultural centers",
+    "social community centre": "Cultural centers",
+    "community space": "Cultural centers",
+    "cultural centre": "Cultural centers",
+    "cultural center": "Cultural centers",
+    "cultural centres": "Cultural centers",
+    "cultural centers": "Cultural centers",
+    "gallery": "Gallery",
+    "museum": "Museum",
+    "theatre": "Theatre",
+    "live music venue": "Live music venue",
+    "music venue": "Live music venue",
+    "makers space": "Makers space",
+    "makerspace": "Makers space",
+    "workshop space": "Makers space",
+    "poetry readings": "Poetry readings",
+    "park": "Park",
+    "garden": "Garden",
+    "one-off event": "One-off event",
+    "other": "Other",
+}
+
 BAD_NAME_PHRASES = {
     "museums and collections",
     "programmes and exhibitions",
@@ -1830,6 +1861,43 @@ def _infer_category(text_blob: str, entity_kind: str = "place") -> str:
     return best
 
 
+def _canonicalize_category_label(
+    category_value: str | None,
+    *,
+    name: str | None = None,
+    blob: str | None = None,
+    entity_kind: str = "place",
+) -> str:
+    if entity_kind == "one_off_event":
+        return "One-off event"
+
+    normalized = _normalize_token(category_value)
+    name_norm = _normalize_token(name)
+    if normalized == "other" and "soas" in name_norm:
+        return "Education"
+    if normalized in CATEGORY_CANONICAL_MAP:
+        return CATEGORY_CANONICAL_MAP[normalized]
+
+    # Catch near-variants produced by model output.
+    if "lecture" in normalized or "education" in normalized:
+        return "Education"
+    if "bookshop" in normalized or "bookstore" in normalized:
+        return "Bookshops"
+    if "cinema" in normalized:
+        return "Cinema"
+    if "community" in normalized or "cultural" in normalized:
+        return "Cultural centers"
+
+    if "soas" in name_norm:
+        return "Education"
+
+    blob_norm = _normalize_token(blob)
+    if "lecture" in blob_norm or "public programme" in blob_norm:
+        return "Education"
+
+    return "Other"
+
+
 def _guess_name_from_bundle(bundle: dict[str, Any]) -> str | None:
     title = _clean_text(bundle.get("title"))
     h1 = _clean_text(bundle.get("h1"))
@@ -2198,10 +2266,12 @@ def _finalize_entity_record(
     borough = _normalize_borough(entity.get("borough")) or _infer_borough(blob)
 
     category_raw = _clean_text(entity.get("category"))
-    category = (
-        "one-off event"
-        if entity_kind == "one_off_event"
-        else (category_raw if category_raw else _infer_category(blob, entity_kind=entity_kind))
+    inferred_category = category_raw if category_raw else _infer_category(blob, entity_kind=entity_kind)
+    category = _canonicalize_category_label(
+        inferred_category,
+        name=name,
+        blob=blob,
+        entity_kind=entity_kind,
     )
 
     description = _clean_text(entity.get("description"))

@@ -306,6 +306,22 @@ CLEANUP_BAD_NAME_PHRASES = (
     "overview",
 )
 
+CATEGORY_NORMALIZATION_MAP = {
+    "lecture series": "Education",
+    "lecture venue": "Education",
+    "community cinema": "Cinema",
+    "cinema": "Cinema",
+    "bookshop": "Bookshops",
+    "bookshop events": "Bookshops",
+    "social community center": "Cultural centers",
+    "social community centre": "Cultural centers",
+    "community space": "Cultural centers",
+    "cultural centre": "Cultural centers",
+    "cultural center": "Cultural centers",
+    "cultural centres": "Cultural centers",
+    "cultural centers": "Cultural centers",
+}
+
 LOW_TRUST_SOURCE_DOMAIN_SUFFIXES = (
     "wikipedia.org",
     "linkedin.com",
@@ -335,6 +351,11 @@ def _domain_matches_suffix(value: str | None, suffixes: tuple[str, ...]) -> bool
     if not host:
         return False
     return any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def _normalize_category_value(value: str | None) -> str:
+    normalized = _normalize_name(value)
+    return normalized.replace("  ", " ").strip()
 
 
 def _is_low_trust_source_domain(value: str | None) -> bool:
@@ -1231,6 +1252,56 @@ def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit
         "already_inactive": already_inactive,
         "already_rejected": already_rejected,
         "sample": flagged[:30],
+    }
+
+
+def normalize_org_categories(dry_run: bool = False) -> dict[str, Any]:
+    with get_db() as conn:
+        rows = conn.execute(text("SELECT id, name, category FROM orgs ORDER BY id ASC")).mappings().all()
+
+    updates: list[dict[str, Any]] = []
+    transition_counts: dict[str, int] = {}
+
+    for row in rows:
+        old_raw = str(row.get("category") or "").strip()
+        old_norm = _normalize_category_value(old_raw)
+        name_norm = _normalize_name(row.get("name"))
+
+        target = CATEGORY_NORMALIZATION_MAP.get(old_norm)
+        if not target and old_norm == "other" and "soas" in name_norm:
+            target = "Education"
+
+        if not target:
+            continue
+        if old_raw == target:
+            continue
+
+        updates.append(
+            {
+                "id": int(row["id"]),
+                "name": row.get("name"),
+                "from": old_raw or None,
+                "to": target,
+            }
+        )
+        key = f"{old_raw or '(empty)'} -> {target}"
+        transition_counts[key] = transition_counts.get(key, 0) + 1
+
+    if not dry_run and updates:
+        with get_db() as conn:
+            for item in updates:
+                conn.execute(
+                    text("UPDATE orgs SET category = :category WHERE id = :org_id"),
+                    {"category": item["to"], "org_id": int(item["id"])},
+                )
+
+    return {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "scanned": len(rows),
+        "updated": len(updates),
+        "transitions": transition_counts,
+        "sample": updates[:50],
     }
 
 

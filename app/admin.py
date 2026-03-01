@@ -21,6 +21,7 @@ from app.db import (
     get_stats,
     get_strategies,
     init_db,
+    normalize_org_categories,
     set_strategy_active,
     update_org,
     upsert_org,
@@ -457,6 +458,13 @@ def cleanup_discovery_now():
         dry_run=bool(data.get("dry_run", False)),
         limit=_optional_int("limit", 1000),
     )
+    return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
+
+
+@app.route("/api/admin/categories/normalize", methods=["POST"])
+def normalize_categories_now():
+    data = request.json or {}
+    summary = normalize_org_categories(dry_run=bool(data.get("dry_run", False)))
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
 
 
