@@ -312,10 +312,10 @@ async function runDiscoveryNow() {
     const payload = await apiRequest("/api/admin/discovery/run", {
       method: "POST",
       body: JSON.stringify({
-        max_queries: 16,
-        max_results_per_query: 8,
-        max_candidates: 60,
-        request_timeout: 12,
+        max_queries: 120,
+        max_results_per_query: 10,
+        max_candidates: 320,
+        request_timeout: 14,
       }),
     });
 
