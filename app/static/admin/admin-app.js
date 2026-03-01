@@ -364,9 +364,7 @@ async function moveActiveOrgToQueue(orgId) {
   const alreadyInQueue = (state.queue || []).some((item) => item.id === orgId);
 
   if (isAlreadyOpen && alreadyInQueue) {
-    ui.tab = "queue";
-    ui.currentQueueId = orgId;
-    setNotice(`Opened "${org?.name || `Org #${orgId}`}" in Review Queue.`);
+    setNotice(`"${org?.name || `Org #${orgId}`}" is already in the Review Queue.`);
     render();
     return;
   }
@@ -384,12 +382,6 @@ async function moveActiveOrgToQueue(orgId) {
 
     state = payload.state || state;
     syncCurrentQueue();
-
-    const existsInQueue = (state.queue || []).some((item) => item.id === orgId);
-    ui.tab = "queue";
-    if (existsInQueue) {
-      ui.currentQueueId = orgId;
-    }
     setNotice(`Moved "${org?.name || `Org #${orgId}`}" to Review Queue.`);
   } catch (error) {
     setNotice(error.message);
@@ -501,14 +493,9 @@ function renderActive() {
         <td>${escapeHtml(item.category || "-")}</td>
         <td>${item.events_url ? `<a href="${escapeHtml(item.events_url)}" target="_blank" rel="noreferrer">Link</a>` : "-"}</td>
         <td>${escapeHtml(formatDate(item.created_at))}</td>
-        <td>${escapeHtml(formatDate(item.last_crawled_at))}</td>
-        <td>${escapeHtml(formatDate(item.last_successful_event_extract_at))}</td>
-        <td>${escapeHtml(item.consecutive_failures || 0)}</td>
-        <td>${escapeHtml(item.consecutive_empty_extracts || 0)}</td>
-        <td>${item.is_new ? "New" : ""}</td>
         <td>
-          <button class="ghost-btn mini-btn" data-action="queue-from-active" data-id="${item.id}" ${ui.isBusy ? "disabled" : ""}>
-            ${isOpenIssue ? "Open in Queue" : "Move to Queue"}
+          <button class="ghost-btn mini-btn" data-action="queue-from-active" data-id="${item.id}" ${ui.isBusy ? "disabled" : ""} title="${isOpenIssue ? "Open in Queue" : "Move to Queue"}">
+            &#x2192;
           </button>
         </td>
       </tr>
@@ -536,16 +523,11 @@ function renderActive() {
               <th>Type</th>
               <th>Events URL</th>
               <th>Created At</th>
-              <th>Last Crawled</th>
-              <th>Last Success</th>
-              <th>Failures</th>
-              <th>Empty</th>
-              <th>New</th>
-              <th>Actions</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            ${rows || '<tr><td colspan="11">No active orgs.</td></tr>'}
+            ${rows || '<tr><td colspan="6">No active orgs.</td></tr>'}
           </tbody>
         </table>
       </div>
