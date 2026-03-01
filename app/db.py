@@ -81,6 +81,39 @@ NAME_STOPWORDS = {
     "house",
 }
 
+CORE_NAME_DROP_TOKENS = {
+    "the",
+    "of",
+    "and",
+    "for",
+    "in",
+    "at",
+    "to",
+    "a",
+    "an",
+    "london",
+    "uk",
+    "co",
+    "company",
+    "ltd",
+    "limited",
+    "llp",
+    "plc",
+}
+
+PROGRAM_VARIANT_TOKENS = {
+    "program",
+    "programme",
+    "touring",
+    "film",
+    "festival",
+    "events",
+    "event",
+    "lates",
+    "calendar",
+    "series",
+}
+
 
 def _name_tokens(normalized_name: str | None) -> list[str]:
     tokens = [token for token in str(normalized_name or "").split(" ") if token]
@@ -117,6 +150,46 @@ def _names_likely_same_entity(left: str | None, right: str | None) -> bool:
         if overlap >= 0.75:
             return True
     return False
+
+
+def _entity_name_tokens(value: str | None) -> list[str]:
+    normalized = _normalize_name(value)
+    if not normalized:
+        return []
+    tokens = [token for token in normalized.split(" ") if token]
+    return [token for token in tokens if token not in CORE_NAME_DROP_TOKENS]
+
+
+def _core_name_key(value: str | None) -> str:
+    tokens = [token for token in _entity_name_tokens(value) if token not in PROGRAM_VARIANT_TOKENS]
+    if len(tokens) < 2:
+        return ""
+    return " ".join(tokens[:4])
+
+
+def _has_program_variant_suffix(left: str | None, right: str | None) -> bool:
+    left_tokens = _entity_name_tokens(left)
+    right_tokens = _entity_name_tokens(right)
+    if not left_tokens or not right_tokens:
+        return False
+
+    small, large = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
+    if len(small) < 2 or len(large) <= len(small):
+        return False
+    if large[: len(small)] != small:
+        return False
+    suffix = large[len(small) :]
+    return bool(suffix and all(token in PROGRAM_VARIANT_TOKENS for token in suffix))
+
+
+def _names_share_core_entity(left: str | None, right: str | None) -> bool:
+    left_core = _core_name_key(left)
+    right_core = _core_name_key(right)
+    if not left_core or not right_core:
+        return False
+    if left_core == right_core:
+        return True
+    return _has_program_variant_suffix(left, right)
 
 
 def _active_filter_sql() -> str:
@@ -492,9 +565,12 @@ def _dedupe_and_enrich() -> None:
                     union(row_id, existing)
 
         # Cross-domain dedupe safety:
-        # If two rows have exactly the same normalized name and one comes from a low-trust domain
-        # (e.g., wikipedia/linkedin) while another does not, merge them.
+        # 1) Exact normalized-name matches where one side is low-trust.
+        # 2) Core-name matches (e.g. "The Japan Foundation" vs
+        #    "Japan Foundation Touring Film Programme") when there is a clear
+        #    parent/variant signal.
         by_exact_name: dict[str, list[tuple[int, str]]] = {}
+        by_core_name: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             row_id = int(row["id"])
             name_key = _normalize_name(row.get("name"))
@@ -502,6 +578,17 @@ def _dedupe_and_enrich() -> None:
                 continue
             domain = row.get("source_domain") or _domain_from_url(row.get("homepage")) or _domain_from_url(row.get("events_url")) or ""
             by_exact_name.setdefault(name_key, []).append((row_id, str(domain).lower()))
+            core_key = _core_name_key(row.get("name"))
+            if core_key:
+                by_core_name.setdefault(core_key, []).append(
+                    {
+                        "id": row_id,
+                        "name": row.get("name"),
+                        "domain": str(domain).lower(),
+                        "has_events_url": bool(str(row.get("events_url") or "").strip()),
+                        "has_homepage": bool(str(row.get("homepage") or "").strip()),
+                    }
+                )
 
         for items in by_exact_name.values():
             if len(items) < 2:
@@ -513,6 +600,42 @@ def _dedupe_and_enrich() -> None:
             anchor = high_ids[0]
             for row_id in low_ids:
                 union(anchor, row_id)
+
+        for items in by_core_name.values():
+            if len(items) < 2:
+                continue
+
+            def _anchor_score(item: dict[str, Any]) -> tuple[int, int]:
+                score = 0
+                if not _is_low_trust_source_domain(item.get("domain")):
+                    score += 100
+                if item.get("has_events_url"):
+                    score += 40
+                if item.get("has_homepage"):
+                    score += 20
+                return (score, -int(item.get("id") or 0))
+
+            ordered = sorted(items, key=_anchor_score, reverse=True)
+            anchor = ordered[0]
+            anchor_id = int(anchor["id"])
+
+            for candidate in ordered[1:]:
+                candidate_id = int(candidate["id"])
+                if candidate_id == anchor_id:
+                    continue
+
+                names_related = _names_share_core_entity(anchor.get("name"), candidate.get("name"))
+                if not names_related:
+                    continue
+
+                low_trust_asymmetry = _is_low_trust_source_domain(anchor.get("domain")) != _is_low_trust_source_domain(
+                    candidate.get("domain")
+                )
+                program_variant = _has_program_variant_suffix(anchor.get("name"), candidate.get("name"))
+                missing_events_asymmetry = bool(anchor.get("has_events_url")) != bool(candidate.get("has_events_url"))
+
+                if low_trust_asymmetry or program_variant or missing_events_asymmetry:
+                    union(anchor_id, candidate_id)
 
         groups: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
@@ -1068,9 +1191,18 @@ def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit
         )
 
     updated = 0
+    newly_inactivated = 0
+    already_inactive = 0
+    already_rejected = 0
     if not dry_run:
         for item in flagged:
             org = get_org(int(item["id"])) or {}
+            if bool(org.get("active", True)):
+                newly_inactivated += 1
+            else:
+                already_inactive += 1
+            if str(org.get("status") or "").strip().lower() == "rejected":
+                already_rejected += 1
             reason_text = "; ".join(item["reasons"][:3])
             note = str(org.get("notes") or "").strip()
             cleanup_note = f"Auto-cleanup: {reason_text}"
@@ -1095,6 +1227,9 @@ def cleanup_recent_discovery_garbage(days: int = 7, dry_run: bool = False, limit
         "scanned": len(scoped_rows),
         "flagged": len(flagged),
         "updated": updated,
+        "newly_inactivated": newly_inactivated,
+        "already_inactive": already_inactive,
+        "already_rejected": already_rejected,
         "sample": flagged[:30],
     }
 

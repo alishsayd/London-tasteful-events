@@ -348,7 +348,16 @@ async function cleanupDiscoveryNow() {
     const summary = payload.summary || {};
     const updated = Number(summary.updated || 0);
     const flagged = Number(summary.flagged || 0);
-    setNotice(`Cleanup complete: ${updated} updated (${flagged} flagged).`);
+    const newlyInactivated = Number(summary.newly_inactivated || 0);
+    const sample = Array.isArray(summary.sample) ? summary.sample : [];
+    const sampleNames = sample
+      .map((item) => String(item?.name || "").trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    const sampleLabel = sampleNames.length ? ` Flagged: ${sampleNames.join(", ")}.` : "";
+    setNotice(
+      `Cleanup complete: ${updated} updated (${flagged} flagged, ${newlyInactivated} newly inactivated).${sampleLabel}`
+    );
   } catch (error) {
     setNotice(error.message);
   } finally {
