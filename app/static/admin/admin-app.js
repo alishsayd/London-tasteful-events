@@ -7,6 +7,7 @@ const ORG_TYPES = [
   "art centre",
   "house",
   "social community center",
+  "promoter",
   "other",
 ];
 

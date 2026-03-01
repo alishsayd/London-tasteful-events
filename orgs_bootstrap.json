@@ -325,7 +325,7 @@
     "events_url": "https://applesandsnakes.org/event/jawdance/",
     "description": "London's warmest spoken word and open mic night. Free to attend. Supportive space for all voices.",
     "borough": "Hackney",
-    "category": "poetry readings"
+    "category": "promoter"
   },
   {
     "name": "Hidden Literature (MY WORD!)",
@@ -333,7 +333,7 @@
     "events_url": "https://hiddenliterature.com/london-poetry-open-mic/",
     "description": "Open mic night at Grow Hackney. Spoken word, poetry, hip-hop, R&B, neo-soul. Welcoming to first-timers.",
     "borough": "Hackney",
-    "category": "poetry readings"
+    "category": "promoter"
   },
   {
     "name": "Grow Hackney",
@@ -501,7 +501,7 @@
     "events_url": "https://www.mamsham.com/",
     "description": "Comedy-meets-culinary supper club. Three-course menus inspired by three comedy acts. Seats up to 200.",
     "borough": null,
-    "category": "supper club"
+    "category": "promoter"
   },
   {
     "name": "Khao Suppers",
@@ -509,7 +509,7 @@
     "events_url": null,
     "description": "Monthly Gujarati supper club. Started in an East London home. Four-course menus of classic Gujarati dishes.",
     "borough": "Hackney",
-    "category": "supper club"
+    "category": "promoter"
   },
   {
     "name": "Dinner Ladies",
@@ -517,7 +517,7 @@
     "events_url": null,
     "description": "Sustainable supper clubs with Asian flex. Themed events including Wasted Supper — turning unwanted leftovers into delicious meals.",
     "borough": null,
-    "category": "supper club"
+    "category": "promoter"
   },
   {
     "name": "Eleven98",
@@ -525,7 +525,7 @@
     "events_url": null,
     "description": "Hackney-sourced supper club. All produce from local area. Sustainability-first dinners.",
     "borough": "Hackney",
-    "category": "supper club"
+    "category": "promoter"
   },
   {
     "name": "Wimbledon BookFest",
@@ -605,7 +605,7 @@
     "events_url": "https://www.eatwith.com/l/destinations/london/dinners",
     "description": "Platform for supper clubs and alternative dining experiences with local chefs.",
     "borough": null,
-    "category": "supper club"
+    "category": "promoter"
   },
   {
     "name": "Tate Britain",
@@ -646,5 +646,13 @@
     "description": "Jazz, soul and blues in Canary Wharf and Belgravia. Sunday blues brunch, Saturday soul lunches, live bands.",
     "borough": "Tower Hamlets",
     "category": "live music venue"
+  },
+  {
+    "name": "Wintershall",
+    "homepage": "https://www.wintershall.org.uk/",
+    "events_url": "https://www.wintershall.org.uk/events",
+    "description": "Charitable trust staging large-scale biblical dramas. The Passion play in Trafalgar Square every Easter, plus a Nativity in winter.",
+    "borough": "Westminster",
+    "category": "promoter"
   }
 ]

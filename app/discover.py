@@ -164,6 +164,12 @@ QUERY_FAMILIES = [
     "philosophy and ideas venues",
     "urbanism and city culture venues",
     "makerspaces with public workshops",
+    "London supper clubs",
+    "touring theatre companies London",
+    "comedy night promoters London",
+    "open mic night promoters London",
+    "spoken word promoters London",
+    "pop-up event producers London",
 ]
 
 ONE_OFF_EVENT_FAMILIES = [
@@ -415,6 +421,7 @@ CATEGORY_MAP = {
     "park": ["park", "friends of", "outdoor events", "walks programme"],
     "garden": ["garden", "conservatory", "horticulture"],
     "one-off event": ["festival", "5k", "10k", "marathon", "fair", "biennale", "expo"],
+    "promoter": ["promoter", "touring", "touring company", "supper club", "open mic", "comedy night", "producing"],
 }
 
 CATEGORY_CANONICAL_MAP = {
@@ -445,6 +452,7 @@ CATEGORY_CANONICAL_MAP = {
     "park": "Park",
     "garden": "Garden",
     "one-off event": "One-off event",
+    "promoter": "Promoter",
     "other": "Other",
 }
 
@@ -1844,12 +1852,14 @@ def _infer_borough(text_blob: str) -> str | None:
 def _infer_category(text_blob: str, entity_kind: str = "place") -> str:
     if entity_kind == "one_off_event":
         return "one-off event"
+    if entity_kind == "promoter":
+        return "promoter"
 
     lower = _normalize_token(text_blob)
     best = "other"
     best_score = 0
     for category, keywords in CATEGORY_MAP.items():
-        if category == "one-off event":
+        if category in ("one-off event", "promoter"):
             continue
         score = 0
         for keyword in keywords:
@@ -1870,6 +1880,8 @@ def _canonicalize_category_label(
 ) -> str:
     if entity_kind == "one_off_event":
         return "One-off event"
+    if entity_kind == "promoter":
+        return "Promoter"
 
     normalized = _normalize_token(category_value)
     name_norm = _normalize_token(name)
@@ -2063,7 +2075,19 @@ def _heuristic_gate(bundle: dict[str, Any]) -> dict[str, Any]:
     if "official" in normalized_blob and "festival" in normalized_blob:
         one_off_score += 1
 
-    entity_kind = "one_off_event" if one_off_score >= 2 and positive >= 2 else "place"
+    promoter_score = 0
+    promoter_hints = ("supper club", "touring", "open mic", "comedy night", "pop-up", "popup")
+    if any(hint in normalized_blob for hint in promoter_hints):
+        promoter_score += 2
+    if not bundle.get("address_snippets") and bundle.get("events_link_candidates"):
+        promoter_score += 1
+
+    if one_off_score >= 2 and positive >= 2:
+        entity_kind = "one_off_event"
+    elif promoter_score >= 2 and positive >= 2:
+        entity_kind = "promoter"
+    else:
+        entity_kind = "place"
 
     confidence = max(0.0, min(0.99, 0.45 + positive * 0.08 - negative * 0.1 + (0.05 if entity_kind == "one_off_event" else 0.0)))
 
@@ -2120,12 +2144,14 @@ def _classify_site_bundles_with_llm(
     system_prompt = (
         "You classify compact site bundles into valid London entities. "
         "Return strict JSON object: {\"items\": [{\"domain\": str, \"is_entity\": bool, "
-        "\"entity_kind\": \"place\"|\"one_off_event\"|\"reject\", \"name\": str|null, "
+        "\"entity_kind\": \"place\"|\"one_off_event\"|\"promoter\"|\"reject\", \"name\": str|null, "
         "\"homepage\": str|null, \"events_url\": str|null, \"borough\": str|null, \"category\": str|null, "
         "\"description\": str|null, \"confidence\": number, \"reason_codes\": [str]}]}. "
         "Exclusions (never entity): aggregators/listicles/marketplaces/directories/social networks/publishers/ticket pages. "
-        "A place is a recurring London venue/institution/organizer with a real-world presence. "
-        "one_off_event is a major standalone event series or annual event with official landing page."
+        "A place is a recurring London venue/institution with a fixed location. "
+        "A promoter is a company/group that produces events across various venues. "
+        "one_off_event is a major standalone event series or annual event with official landing page. "
+        "A promoter is a company/group that produces and markets events across various venues (e.g. touring theatre, supper clubs, comedy night brands, open mic series)."
     )
 
     for start in range(0, len(bundles), max(1, batch_size)):

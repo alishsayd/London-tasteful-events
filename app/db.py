@@ -324,6 +324,8 @@ CATEGORY_NORMALIZATION_MAP = {
     "cultural center": "Cultural centers",
     "cultural centres": "Cultural centers",
     "cultural centers": "Cultural centers",
+    "promoter": "Promoter",
+    "supper club": "Promoter",
 }
 
 LOW_TRUST_SOURCE_DOMAIN_SUFFIXES = (
