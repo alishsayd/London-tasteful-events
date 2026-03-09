@@ -43,7 +43,7 @@ def _auth_not_configured() -> Response:
     return Response("Admin auth is not configured.", 503)
 @app.before_request
 def require_basic_auth():
-    if request.path in {"/", "/browse", "/healthz", "/favicon.ico"}:
+    if request.path in {"/", "/browse", "/healthz", "/favicon.ico"} or request.path.startswith("/api/flag/"):
         return None
     if not _auth_enabled():
         return None if _allow_insecure_local_admin() else _auth_not_configured()
@@ -159,6 +159,13 @@ def stats():
 @app.route("/export")
 def export():
     return jsonify(get_active_orgs())
+@app.route("/api/flag/<int:org_id>", methods=["POST"])
+def flag_org(org_id: int):
+    org = get_org(org_id)
+    if not org:
+        return jsonify({"ok": True})
+    update_org(org_id, issue_state="open", review_needed_reason="Flagged by public user")
+    return jsonify({"ok": True})
 @app.route("/api/admin/state")
 def admin_state():
     return jsonify(_state_payload())
