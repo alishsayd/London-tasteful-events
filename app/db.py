@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SQLITE_PATH = PROJECT_ROOT / "orgs.db"
 def _db_url(raw: str | None) -> str:
@@ -22,10 +22,30 @@ ENGINE = create_engine(_db_url(os.getenv("DATABASE_URL")), future=True, pool_pre
 IS_POSTGRES = ENGINE.dialect.name.startswith("postgres")
 BINARY_TRUE = "TRUE" if IS_POSTGRES else "1"
 BINARY_FALSE = "FALSE" if IS_POSTGRES else "0"
+CONFLICT_KIND_LABELS = {
+    "homepage": "homepage",
+    "events_url": "events URL",
+    "domain_name": "domain + name",
+}
 @contextmanager
 def get_db():
     with ENGINE.begin() as conn:
         yield conn
+class DedupeConflictError(ValueError):
+    def __init__(self, org_id: int, kind: str, name: str | None = None):
+        self.org_id = int(org_id)
+        self.kind = kind
+        self.name = _clean(name) or None
+        label = CONFLICT_KIND_LABELS.get(kind, kind.replace("_", " "))
+        name_part = f" ({self.name})" if self.name else ""
+        super().__init__(f"Conflicts with existing org #{self.org_id}{name_part} by {label}.")
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "error": str(self),
+            "conflict_org_id": self.org_id,
+            "conflict_kind": self.kind,
+            "conflict_name": self.name,
+        }
 ORG_TYPES = (
     "bookshop",
     "cinema",
@@ -131,6 +151,21 @@ def _canonical_url(value: Any) -> str:
 def _domain(value: Any) -> str:
     canonical = _canonical_url(value)
     return (urlparse(canonical).netloc or "").lower().replace("www.", "") if canonical else ""
+def _domain_name_key(name: Any, homepage: Any = None, events_url: Any = None) -> str:
+    domain = _domain(homepage) or _domain(events_url)
+    name_key = _token(name)
+    return f"{domain}|{name_key}" if domain and name_key else ""
+def _org_keys(name: Any, homepage: Any = None, events_url: Any = None) -> dict[str, str | None]:
+    homepage_key = _canonical_url(homepage) or None
+    events_url_key = _canonical_url(events_url) or None
+    name_key = _token(name) or None
+    domain_name_key = _domain_name_key(name, homepage, events_url) or None
+    return {
+        "homepage_key": homepage_key,
+        "events_url_key": events_url_key,
+        "name_key": name_key,
+        "domain_name_key": domain_name_key,
+    }
 def _normalize_org_type(value: Any) -> str:
     raw = _token(value)
     if not raw:
@@ -204,12 +239,81 @@ def _queue_sql() -> str:
         "OR borough IS NULL OR trim(borough)='' OR org_type IS NULL OR trim(org_type)='' "
         "OR coalesce(consecutive_failures,0) >= 3 OR coalesce(consecutive_empty_extracts,0) >= 3))"
     )
-def _add_column(conn, table: str, spec: str) -> None:
-    try:
-        prefix = "IF NOT EXISTS " if IS_POSTGRES else ""
-        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {prefix}{spec}"))
-    except Exception:
-        pass
+def _table_columns(conn, table: str) -> set[str]:
+    return {str(col.get("name") or "").strip() for col in inspect(conn).get_columns(table)}
+def _ensure_columns(conn, table: str, specs: tuple[str, ...]) -> None:
+    existing = _table_columns(conn, table)
+    for spec in specs:
+        column = spec.split()[0]
+        if column in existing:
+            continue
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {spec}"))
+        existing.add(column)
+def _create_unique_key_indexes(conn) -> None:
+    for sql in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_orgs_homepage_key ON orgs(homepage_key) WHERE homepage_key IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_orgs_events_url_key ON orgs(events_url_key) WHERE events_url_key IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_orgs_domain_name_key ON orgs(domain_name_key) WHERE domain_name_key IS NOT NULL",
+    ):
+        conn.execute(text(sql if IS_POSTGRES else sql.split(" WHERE ", 1)[0]))
+def _sync_org_keys(conn) -> None:
+    rows = conn.execute(
+        text("SELECT id, name, homepage, events_url, homepage_key, events_url_key, name_key, domain_name_key FROM orgs ORDER BY id ASC")
+    ).mappings().all()
+    seen_home: set[str] = set()
+    seen_events: set[str] = set()
+    seen_domain_name: set[str] = set()
+    updates: list[dict[str, Any]] = []
+    for row in rows:
+        keys = _org_keys(row.get("name"), row.get("homepage"), row.get("events_url"))
+        homepage_key = keys["homepage_key"] if keys["homepage_key"] and keys["homepage_key"] not in seen_home else None
+        events_url_key = keys["events_url_key"] if keys["events_url_key"] and keys["events_url_key"] not in seen_events else None
+        domain_name_key = keys["domain_name_key"] if keys["domain_name_key"] and keys["domain_name_key"] not in seen_domain_name else None
+        if homepage_key:
+            seen_home.add(homepage_key)
+        if events_url_key:
+            seen_events.add(events_url_key)
+        if domain_name_key:
+            seen_domain_name.add(domain_name_key)
+        name_key = keys["name_key"]
+        if (
+            row.get("homepage_key") == homepage_key
+            and row.get("events_url_key") == events_url_key
+            and row.get("name_key") == name_key
+            and row.get("domain_name_key") == domain_name_key
+        ):
+            continue
+        updates.append(
+            {
+                "id": int(row["id"]),
+                "homepage_key": homepage_key,
+                "events_url_key": events_url_key,
+                "name_key": name_key,
+                "domain_name_key": domain_name_key,
+            }
+        )
+    if updates:
+        conn.execute(
+            text(
+                "UPDATE orgs SET homepage_key=:homepage_key, events_url_key=:events_url_key, "
+                "name_key=:name_key, domain_name_key=:domain_name_key WHERE id=:id"
+            ),
+            updates,
+        )
+def _conflicting_org(conn, org_id: int | None = None, **keys: Any) -> dict[str, Any] | None:
+    for field, kind in (("events_url_key", "events_url"), ("homepage_key", "homepage"), ("domain_name_key", "domain_name")):
+        value = keys.get(field)
+        if not value:
+            continue
+        params: dict[str, Any] = {field: value}
+        sql = f"SELECT id, name FROM orgs WHERE {field}=:{field}"
+        if org_id is not None:
+            sql += " AND id<>:id"
+            params["id"] = int(org_id)
+        row = conn.execute(text(sql + " ORDER BY id ASC LIMIT 1"), params).mappings().first()
+        if row:
+            return {"id": int(row["id"]), "name": _clean(row.get("name")), "kind": kind}
+    return None
 def _decode_json(value: Any) -> Any:
     if isinstance(value, dict):
         return value
@@ -237,11 +341,18 @@ def init_db() -> None:
                 f")"
             )
         )
-        for spec in (
+        _ensure_columns(
+            conn,
+            "orgs",
+            (
             "primary_type TEXT NOT NULL DEFAULT 'organisation'",
             "org_type TEXT NOT NULL DEFAULT 'organisation'",
             "parent_org_id BIGINT",
             "source_domain TEXT",
+            "homepage_key TEXT",
+            "events_url_key TEXT",
+            "name_key TEXT",
+            "domain_name_key TEXT",
             f"active BOOLEAN NOT NULL DEFAULT {BINARY_TRUE}",
             f"crawl_paused BOOLEAN NOT NULL DEFAULT {BINARY_FALSE}",
             "issue_state TEXT NOT NULL DEFAULT 'none'",
@@ -250,8 +361,8 @@ def init_db() -> None:
             "consecutive_empty_extracts INTEGER NOT NULL DEFAULT 0",
             "last_crawled_at TIMESTAMP",
             "last_successful_event_extract_at TIMESTAMP",
-        ):
-            _add_column(conn, "orgs", spec)
+            ),
+        )
         conn.execute(text(f"UPDATE orgs SET active = {BINARY_TRUE} WHERE active IS NULL"))
         conn.execute(text(f"UPDATE orgs SET crawl_paused = {BINARY_FALSE} WHERE crawl_paused IS NULL"))
         conn.execute(text("UPDATE orgs SET issue_state='none' WHERE issue_state IS NULL"))
@@ -259,10 +370,13 @@ def init_db() -> None:
         conn.execute(text("UPDATE orgs SET consecutive_empty_extracts=0 WHERE consecutive_empty_extracts IS NULL"))
         conn.execute(text("UPDATE orgs SET org_type='organisation' WHERE org_type IS NULL OR trim(org_type)=''"))
         conn.execute(text("UPDATE orgs SET primary_type='organisation' WHERE primary_type IS NULL OR trim(primary_type)=''"))
+        _sync_org_keys(conn)
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_active ON orgs(active,crawl_paused)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_issue ON orgs(issue_state)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_type ON orgs(org_type)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_domain ON orgs(source_domain)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orgs_name_key ON orgs(name_key)"))
+        _create_unique_key_indexes(conn)
         conn.execute(
             text(
                 f"CREATE TABLE IF NOT EXISTS import_runs ("
@@ -272,7 +386,10 @@ def init_db() -> None:
                 f")"
             )
         )
-        for spec in (
+        _ensure_columns(
+            conn,
+            "import_runs",
+            (
             "trigger TEXT NOT NULL DEFAULT 'manual'",
             "source TEXT",
             "file_name TEXT",
@@ -281,44 +398,24 @@ def init_db() -> None:
             "finished_at TIMESTAMP",
             "summary_json TEXT",
             "error TEXT",
-        ):
-            _add_column(conn, "import_runs", spec)
+            ),
+        )
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_import_runs_created ON import_runs(created_at DESC)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_import_runs_status ON import_runs(status)"))
-def _candidate_rows(conn, name: str, homepage: str | None, events_url: str | None, source_domain: str | None) -> list[dict[str, Any]]:
-    clauses = ["lower(name)=lower(:name)"]
-    params: dict[str, Any] = {"name": name}
-    if homepage:
-        clauses.insert(0, "homepage=:homepage")
-        params["homepage"] = homepage
-    if events_url:
-        clauses.insert(0, "events_url=:events_url")
-        params["events_url"] = events_url
-    if source_domain:
-        clauses.append("source_domain=:source_domain")
-        params["source_domain"] = source_domain
-    rows = conn.execute(text(f"SELECT * FROM orgs WHERE {' OR '.join(clauses)} ORDER BY id ASC LIMIT 20"), params).mappings().all()
-    return [dict(row) for row in rows]
-def _pick_existing(rows: list[dict[str, Any]], homepage: str | None, events_url: str | None, source_domain: str | None, name: str) -> dict[str, Any] | None:
-    if not rows:
-        return None
-    if events_url:
-        for row in rows:
-            if _canonical_url(row.get("events_url")) == events_url:
-                return row
-    if homepage:
-        for row in rows:
-            if _canonical_url(row.get("homepage")) == homepage:
-                return row
-    if source_domain:
-        for row in rows:
-            if _clean(row.get("source_domain")) == source_domain and _token(row.get("name")) == _token(name):
-                return row
-    key = _token(name)
-    for row in rows:
-        if _token(row.get("name")) == key:
-            return row
-    return rows[0]
+def _find_existing_org(conn, name: str, homepage: str | None, events_url: str | None) -> tuple[dict[str, Any] | None, str | None]:
+    keys = _org_keys(name, homepage, events_url)
+    for field, kind in (("events_url_key", "events_url"), ("homepage_key", "homepage"), ("domain_name_key", "domain_name")):
+        value = keys.get(field)
+        if not value:
+            continue
+        row = conn.execute(text(f"SELECT * FROM orgs WHERE {field}=:{field} ORDER BY id ASC LIMIT 1"), {field: value}).mappings().first()
+        if row:
+            return dict(row), kind
+    name_key = keys.get("name_key")
+    if not name_key:
+        return None, None
+    row = conn.execute(text("SELECT * FROM orgs WHERE name_key=:name_key ORDER BY id ASC LIMIT 1"), {"name_key": name_key}).mappings().first()
+    return (dict(row), "name") if row else (None, None)
 def upsert_org(
     name: str,
     homepage: str | None = None,
@@ -330,7 +427,8 @@ def upsert_org(
     primary_type: str | None = None,
     parent_org_id: int | None = None,
     source: str | None = None,
-) -> int:
+    return_meta: bool = False,
+) -> int | dict[str, Any]:
     _ = category
     clean_name = _clean(name)
     if not clean_name:
@@ -342,9 +440,9 @@ def upsert_org(
     src_domain = _domain(home) or _domain(events) or None
     resolved_type = _resolve_org_type(clean_name, org_type)
     resolved_primary = _normalize_primary(primary_type, resolved_type)
+    keys = _org_keys(clean_name, home, events)
     with get_db() as conn:
-        rows = _candidate_rows(conn, clean_name, home, events, src_domain)
-        existing = _pick_existing(rows, home, events, src_domain, clean_name)
+        existing, match_kind = _find_existing_org(conn, clean_name, home, events)
         if existing:
             updates: dict[str, Any] = {}
             if home and not _clean(existing.get("homepage")):
@@ -369,10 +467,18 @@ def upsert_org(
             merged_description = _description(clean_name, target_type, boro or _clean(existing.get("borough")) or None, existing.get("description"), description)
             if merged_description != _clean(existing.get("description")):
                 updates["description"] = merged_description
+            updates.update({k: v for k, v in keys.items() if v or k == "name_key"})
+            conflict = _conflicting_org(conn, int(existing["id"]), **updates)
+            if conflict:
+                raise DedupeConflictError(conflict["id"], conflict["kind"], conflict.get("name"))
             if updates:
                 set_sql = ", ".join(f"{key}=:{key}" for key in updates)
                 conn.execute(text(f"UPDATE orgs SET {set_sql} WHERE id=:id"), {**updates, "id": int(existing["id"])})
-            return int(existing["id"])
+            org_id = int(existing["id"])
+            return {"id": org_id, "created": False, "match_kind": match_kind} if return_meta else org_id
+        conflict = _conflicting_org(conn, **keys)
+        if conflict:
+            raise DedupeConflictError(conflict["id"], conflict["kind"], conflict.get("name"))
         params = {
             "name": clean_name,
             "homepage": home,
@@ -384,28 +490,31 @@ def upsert_org(
             "parent_org_id": int(parent_org_id) if parent_org_id is not None else None,
             "source": src,
             "source_domain": src_domain,
+            **keys,
         }
         if IS_POSTGRES:
             row = conn.execute(
                 text(
-                    "INSERT INTO orgs (name,homepage,events_url,description,borough,org_type,primary_type,parent_org_id,source,source_domain) "
-                    "VALUES (:name,:homepage,:events_url,:description,:borough,:org_type,:primary_type,:parent_org_id,:source,:source_domain) RETURNING id"
+                    "INSERT INTO orgs (name,homepage,events_url,description,borough,org_type,primary_type,parent_org_id,source,source_domain,homepage_key,events_url_key,name_key,domain_name_key) "
+                    "VALUES (:name,:homepage,:events_url,:description,:borough,:org_type,:primary_type,:parent_org_id,:source,:source_domain,:homepage_key,:events_url_key,:name_key,:domain_name_key) RETURNING id"
                 ),
                 params,
             ).mappings().first()
             if row:
-                return int(row["id"])
+                org_id = int(row["id"])
+                return {"id": org_id, "created": True, "match_kind": None} if return_meta else org_id
         else:
             conn.execute(
                 text(
-                    "INSERT INTO orgs (name,homepage,events_url,description,borough,org_type,primary_type,parent_org_id,source,source_domain) "
-                    "VALUES (:name,:homepage,:events_url,:description,:borough,:org_type,:primary_type,:parent_org_id,:source,:source_domain)"
+                    "INSERT INTO orgs (name,homepage,events_url,description,borough,org_type,primary_type,parent_org_id,source,source_domain,homepage_key,events_url_key,name_key,domain_name_key) "
+                    "VALUES (:name,:homepage,:events_url,:description,:borough,:org_type,:primary_type,:parent_org_id,:source,:source_domain,:homepage_key,:events_url_key,:name_key,:domain_name_key)"
                 ),
                 params,
             )
             row = conn.execute(text("SELECT last_insert_rowid() AS id")).mappings().first()
             if row:
-                return int(row["id"])
+                org_id = int(row["id"])
+                return {"id": org_id, "created": True, "match_kind": None} if return_meta else org_id
     raise RuntimeError("upsert failed")
 def get_org(org_id: int) -> dict[str, Any] | None:
     with get_db() as conn:
@@ -469,10 +578,17 @@ def update_org(org_id: int, **fields: Any) -> None:
         homepage_value = updates.get("homepage") if "homepage" in updates else current.get("homepage")
         events_value = updates.get("events_url") if "events_url" in updates else current.get("events_url")
         updates["source_domain"] = _domain(homepage_value) or _domain(events_value) or None
-    set_sql = ", ".join(f"{key}=:{key}" for key in updates)
-    if "status" in updates:
-        set_sql += ", reviewed_at=CASE WHEN :status='pending' THEN NULL ELSE CURRENT_TIMESTAMP END"
+    key_name = updates.get("name") or current.get("name")
+    key_home = updates.get("homepage") if "homepage" in updates else current.get("homepage")
+    key_events = updates.get("events_url") if "events_url" in updates else current.get("events_url")
+    updates.update(_org_keys(key_name, key_home, key_events))
     with get_db() as conn:
+        conflict = _conflicting_org(conn, int(org_id), **updates)
+        if conflict:
+            raise DedupeConflictError(conflict["id"], conflict["kind"], conflict.get("name"))
+        set_sql = ", ".join(f"{key}=:{key}" for key in updates)
+        if "status" in updates:
+            set_sql += ", reviewed_at=CASE WHEN :status='pending' THEN NULL ELSE CURRENT_TIMESTAMP END"
         conn.execute(text(f"UPDATE orgs SET {set_sql} WHERE id=:id"), {**updates, "id": int(org_id)})
 def get_active_orgs(limit: int | None = None) -> list[dict[str, Any]]:
     sql = f"SELECT * FROM orgs WHERE {_active_sql()} ORDER BY name ASC"

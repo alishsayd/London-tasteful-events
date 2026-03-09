@@ -5,9 +5,12 @@ import os
 from datetime import date, datetime
 from typing import Any
 from flask import Flask, Response, jsonify, render_template, request
+from sqlalchemy import text
 from app.db import (
+    DedupeConflictError,
     finish_import_run,
     get_active_orgs,
+    get_db,
     get_import_runs,
     get_org,
     get_public_orgs,
@@ -24,18 +27,26 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 init_db()
 def _auth_enabled() -> bool:
     return bool(str(os.getenv("ADMIN_PASSWORD") or "").strip())
+def _allow_insecure_local_admin() -> bool:
+    override = str(os.getenv("ALLOW_INSECURE_ADMIN") or "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    host = (request.host or "").split(":", 1)[0].strip().lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
 def _auth_required() -> Response:
     return Response(
         "Authentication required.",
         401,
         {"WWW-Authenticate": 'Basic realm="London Tasteful Events Admin"'},
     )
+def _auth_not_configured() -> Response:
+    return Response("Admin auth is not configured.", 503)
 @app.before_request
 def require_basic_auth():
     if request.path in {"/", "/browse", "/healthz", "/favicon.ico"}:
         return None
     if not _auth_enabled():
-        return None
+        return None if _allow_insecure_local_admin() else _auth_not_configured()
     expected_user = str(os.getenv("ADMIN_USERNAME") or "admin").strip() or "admin"
     expected_pass = str(os.getenv("ADMIN_PASSWORD") or "").strip()
     auth = request.authorization
@@ -76,6 +87,8 @@ def _queue_reason(row: dict[str, Any]) -> str:
     if str(row.get("issue_state") or "").strip() == "open":
         return "Manually flagged for review"
     return "Needs manual review"
+def _conflict_response(exc: DedupeConflictError):
+    return jsonify(exc.to_payload()), 409
 def _feedback_implies_reject(feedback: str) -> bool:
     lower = str(feedback or "").lower().strip()
     if not lower:
@@ -134,10 +147,11 @@ def browse():
     return render_template("public.html", payload=_public_payload())
 @app.route("/admin")
 def home():
-    return render_template("admin.html", stats=get_stats(), payload=_state_payload())
+    return render_template("admin.html", payload=_state_payload())
 @app.route("/healthz")
 def healthz():
-    init_db()
+    with get_db() as conn:
+        conn.execute(text("SELECT 1"))
     return jsonify({"ok": True})
 @app.route("/api/stats")
 def stats():
@@ -155,7 +169,7 @@ def add_org():
     if not name:
         return jsonify({"error": "name required"}), 400
     try:
-        org_id = upsert_org(
+        result = upsert_org(
             name=name,
             homepage=data.get("homepage"),
             events_url=data.get("events_url"),
@@ -165,12 +179,28 @@ def add_org():
             primary_type=data.get("primary_type"),
             parent_org_id=data.get("parent_org_id"),
             source=data.get("source") or "manual",
+            return_meta=True,
         )
+        org_id = int(result["id"])
+        created = bool(result["created"])
+        existing = get_org(org_id) or {"id": org_id, "name": name}
+        if not created:
+            return jsonify(
+                {
+                    "ok": True,
+                    "id": org_id,
+                    "deduped_existing": True,
+                    "match_kind": result.get("match_kind"),
+                    "existing_org": {"id": org_id, "name": existing.get("name")},
+                }
+            )
         if str(data.get("events_url") or "").strip():
             update_org(org_id, issue_state="none", review_needed_reason=None, active=True, crawl_paused=False)
         else:
             update_org(org_id, issue_state="open", review_needed_reason="Missing events URL", active=True, crawl_paused=False)
         return jsonify({"ok": True, "id": org_id})
+    except DedupeConflictError as exc:
+        return _conflict_response(exc)
     except Exception:
         app.logger.exception("Failed to add org")
         return jsonify({"error": "Failed to add org"}), 500
@@ -223,12 +253,18 @@ def review_org(org_id: int):
     effective_events = updates.get("events_url") if "events_url" in updates else org.get("events_url")
     if not str(effective_events or "").strip() and action in {"open", "snooze"}:
         updates["review_needed_reason"] = updates.get("review_needed_reason") or "Missing events URL"
-    update_org(org_id, **updates)
+    try:
+        update_org(org_id, **updates)
+    except DedupeConflictError as exc:
+        return _conflict_response(exc)
     return jsonify({"ok": True, "org_id": org_id, "action": action, "state": _state_payload()})
 @app.route("/api/admin/taxonomy/normalize", methods=["POST"])
 def normalize_taxonomy_now():
     data = request.json or {}
-    summary = normalize_org_taxonomy(dry_run=bool(data.get("dry_run", False)))
+    try:
+        summary = normalize_org_taxonomy(dry_run=bool(data.get("dry_run", False)))
+    except DedupeConflictError as exc:
+        return _conflict_response(exc)
     return jsonify({"ok": True, "summary": summary, "state": _state_payload()})
 @app.route("/api/admin/import/csv", methods=["POST"])
 def import_csv():
@@ -263,7 +299,6 @@ def import_csv():
         payload["state"] = _state_payload()
     return jsonify(payload)
 def main() -> None:
-    init_db()
     app.run(host="127.0.0.1", port=int(os.getenv("PORT", "5000")), debug=True)
 if __name__ == "__main__":
     main()
