@@ -1,61 +1,149 @@
 # London Tasteful Events
 
-Stateful admin backend for curating London organizations before event extraction.
+CSV-first Flask app for curating and publishing London event-source organizations.
+
+## Current Product Scope
+
+The project currently manages **organizations only**. It does not parse or crawl events yet.
+
+Two user surfaces exist:
+
+- Public browse app at `/` and `/browse`
+- Password-protected admin console at `/admin`
+
+The operating model is:
+
+1. Manually discover candidate orgs externally
+2. Import them through CSV or add them manually in admin
+3. Let the system dedupe and route incomplete rows into review
+4. Publish only vetted active orgs on the public page
 
 ## Runtime
 
 - App: Flask + SQLAlchemy (`app`)
-- Database: PostgreSQL in production (`DATABASE_URL`), SQLite locally by default
+- Database: PostgreSQL in production via `DATABASE_URL`, SQLite locally by default
 - Deployment: Render (`render.yaml`)
+- Production entrypoint: `gunicorn app.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
 
 ## Local Development
 
 1. `python3 -m venv .venv && source .venv/bin/activate`
 2. `pip install -r requirements.txt`
 3. `python -m app.admin`
-4. Open `http://127.0.0.1:5000/`
+4. Open [http://127.0.0.1:5000/](http://127.0.0.1:5000/)
 
-Default local DB file: `orgs.db` (created automatically).
+Default local DB file: `orgs.db`.
 
 ## Environment Variables
 
-- `DATABASE_URL`: required in production
-- `ADMIN_USERNAME`: HTTP Basic username; defaults to `admin`
-- `ADMIN_PASSWORD`: when set, admin/API routes require HTTP Basic Auth (public pages `/` and `/browse` stay open)
-- `AUTO_BOOTSTRAP_ORGS`: defaults to `true`; seeds from `orgs_bootstrap.json` when DB is empty
-- `DISCOVERY_SEARCH_PROVIDER`: `duckduckgo` (default) or `openai_web`
-- `OPENAI_API_KEY`: required when `DISCOVERY_SEARCH_PROVIDER=openai_web`
-- `DISCOVERY_OPENAI_MODEL`: defaults to `gpt-5`
-- `DISCOVERY_OPENAI_EXTERNAL_WEB_ACCESS`: defaults to `true`
-- `DISCOVERY_OPENAI_FALLBACK_TO_DUCKDUCKGO`: defaults to `true`
-- `DISCOVERY_MAX_URLS_PER_DOMAIN`: defaults to `3`; allows additional candidate pages per domain
+- `DATABASE_URL`
+  - Required in production
+  - If unset locally, the app uses SQLite at `orgs.db`
+- `ADMIN_USERNAME`
+  - Optional
+  - Defaults to `admin`
+- `ADMIN_PASSWORD`
+  - Required in production
+  - When set, all admin/API routes require HTTP Basic Auth except public routes
+- `ALLOW_INSECURE_ADMIN`
+  - Optional local-only escape hatch
+  - If truthy, admin/API routes stay open even when `ADMIN_PASSWORD` is unset
+  - Intended only for local development
+
+## Auth Model
+
+Public routes stay open:
+
+- `/`
+- `/browse`
+- `/healthz`
+- `/favicon.ico`
+- `/api/flag/<org_id>`
+
+Everything else requires admin auth unless you are running locally without `ADMIN_PASSWORD`.
+
+In non-local environments, admin auth now fails closed if `ADMIN_PASSWORD` is missing.
+
+## Public Experience
+
+The public page is a lightweight directory of active orgs.
+
+- Shows active orgs that are not crawl-paused
+- Lets users filter by org type and borough
+- Links org names directly to each org's events page
+- Allows public users to flag an org for admin review
+
+## Admin Experience
+
+The admin console is the operational tool for maintaining the org set.
+
+- Review Queue
+  - Edit `name`, `borough`, `org_type`, and `events_url`
+  - Resolve, snooze, or keep issues open
+- Active Orgs
+  - Browse the current active set
+  - Move any org back into the queue for manual review
+- Add Org
+  - Add a single org manually
+  - Manual add dedupes against existing records
+- Bulk CSV Import
+  - Preview import before apply
+  - Reject blocked domains and obvious non-entity rows
+  - Dedupe by canonical URL/domain-name keys
+  - Open review issues for incomplete rows
+- Import History
+  - Shows recent import runs and summary counts
+- Taxonomy Normalize
+  - Recomputes canonical `org_type` and `primary_type`
+
+## Data Rules
+
+Each org has:
+
+- exactly one `primary_type`
+- exactly one canonical `org_type`
+- optional `homepage`
+- optional `events_url`
+- optional `borough`
+
+The app uses canonical dedupe keys in the DB layer:
+
+- `homepage_key`
+- `events_url_key`
+- `domain_name_key`
+- `name_key`
+
+Conflicting writes return structured `409` responses instead of silently creating duplicates.
+
+## API
+
+### Public
+
+- `GET /api/stats`
+- `GET /export`
+- `POST /api/flag/<org_id>`
+
+### Admin
+
+- `GET /api/admin/state`
+- `POST /api/orgs`
+- `POST /api/admin/review/<org_id>`
+- `POST /api/admin/taxonomy/normalize`
+- `POST /api/admin/import/csv`
+
+Notes:
+
+- `POST /api/orgs` may return `deduped_existing: true` when the submitted org matches an existing record.
+- Mutating admin endpoints return `409` with structured conflict metadata when a write would collide with an existing org.
 
 ## Deploy (Render)
 
 - Blueprint: `render.yaml`
-- Web service: `london-tasteful-events-admin`
+- Service: `london-tasteful-events-admin`
 - Health check: `GET /healthz`
-- Start command: `gunicorn app.wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
 
-## Pages
-
-- Public browse app: `/` (also `/browse`)
-  - Shows only active orgs that are not in open/snoozed review states
-- Admin console: `/admin`
-
-## API (Current)
-
-- `GET /api/admin/state`
-- `POST /api/admin/review/<org_id>`
-- `GET|POST /api/admin/strategies`
-- `PATCH /api/admin/strategies/<strategy_id>`
-- `POST /api/admin/discovery/run` (supports optional `search_provider`)
-- `POST /api/admin/discovery/cleanup` (cleanup recent auto-discovery garbage rows)
-- `POST /api/orgs`
-- `POST /api/orgs/bulk`
-- `GET /api/stats`
-- `GET /export`
+After deployment, verify that `ADMIN_PASSWORD` is configured in Render.
 
 ## Collaboration
 
-See [`docs/parallel-collaboration.md`](docs/parallel-collaboration.md) for branch naming and file ownership boundaries to reduce merge conflicts for parallel agent development.
+See [`docs/parallel-collaboration.md`](docs/parallel-collaboration.md) for branch naming and file ownership boundaries when multiple agents are working in parallel.

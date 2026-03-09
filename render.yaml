@@ -18,5 +18,3 @@ services:
         fromDatabase:
           name: london-tasteful-events-db
           property: connectionString
-      - key: AUTO_BOOTSTRAP_ORGS
-        value: "true"
